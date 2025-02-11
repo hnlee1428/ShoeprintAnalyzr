@@ -1,7 +1,7 @@
 # ShoeprintAnalyzr
 ShoeprintAnalyzr is a CSAFE tool designed to automate the alignment of similar shoeprints, offering significant advantages for both footwear examiners and researchers. By streamlining the alignment process, it reduces manual labor and enhances reproducibility. The tool employs an efficient brute-force search method that integrates downscaling and cross-correlation using Fast Fourier Transformation. Additionally, it offers image processing functionalities to ensure precise alignment.
 
-If you have any questions or suggestions, please feel free to email me: hnlee@iastate.edu
+You can download the materials to run ShoeprintAnalyzr on your computer or simply try it [here](https://csafe.shinyapps.io/ShoeprintAnalyzr/). If you have any questions or suggestions, please feel free to email me: hnlee@iastate.edu
 
 ## Instruction and demonstration videos.
 Please refer to the "ShoeprintAnalyzr_manual.pdf" for detailed instructions on using ShoeprintAnalyzr. You can download the pdf file for reading.
