@@ -14,10 +14,11 @@ library(fasterize)
 library(magick)
 library(lattice)
 library(gridExtra)
-library(xlsx)
+library(openxlsx) # library(xlsx) was replaced.
 library(shinycssloaders)
 library(imagefx)
 library(zip)
+library(pracma)
 
 ## Uncomment (remove the heading '#'s) the below code (install.packages ~ "xlsx"))to install the following packages; 
 ## copy and paste it to R console and hit Enter for installation.
@@ -59,11 +60,11 @@ library(zip)
 
 # Allow to handle upto 100 MB
 options(shiny.maxRequestSize = 100 * 1024^2)
-
-# To create a temporary directory 
+# 
+# # To create a temporary directory 
 temp_directory <- file.path(tempdir(), as.integer(Sys.Date()))
 dir.create(temp_directory)
-
+cat(temp_directory)
 # User Interface for application
 ui <- fluidPage(
   tags$head(
@@ -113,7 +114,7 @@ ui <- fluidPage(
              column(3,align = "left", class = 'column_w_bar',
                     fileInput(inputId = "file2",
                               label = tags$span(icon("upload"), "Upload a shoeprint (png, jpg, tiff)"), 
-                              accept = c(".png", ".jpg", ".tiff")),
+                              accept = c("image/png", "image/jpeg", "image/jpg", ".png", ".jpg", "jpeg", ".tiff")),
                     div(fileInput(inputId = "file2_supp", 
                                   label = tags$span(icon("upload"), "Optional: processing info (txt)"), 
                                   accept = c(".txt")), style="color: #555759;"),
@@ -123,7 +124,7 @@ ui <- fluidPage(
                                    tags$i(class = "glyphicon glyphicon-question-sign", 
                                           style = "color:#0072B2;",
                                           title = "To expedite image processing, the image on the right is displayed at the reduced scale you've chosen. Larger values may extend processing time but reduce discrepancies in your processed image when viewed at its original scale. min = 1%, max = 100%.")), 
-                                 min = 1, max = 100, value = 20),
+                                 min = 1, max = 100, value = 10),
                     helpText("Note: Viweing scale should be set prior to cropping.
                              If you need to change the scale while/after cropping, update the scale, and then reset/redo cropping."),
                     hr(),
@@ -194,7 +195,7 @@ You can use the 'PAUSE', 'BACKWARD', and 'UNDO' buttons to pause point collectio
              column(3,align = "left", class = 'column_w_bar', 
                     fileInput(inputId = "file1", 
                               label = tags$span(icon("upload"), "Upload a shoeprint (png, jpg, tiff)"), 
-                              accept = c(".png", ".jpg", ".tiff")),
+                              accept = c("image/png", "image/jpeg", "image/jpg", ".png", ".jpg", "jpeg", ".tiff")),
                     div(fileInput(inputId = "file1_supp", 
                                   label = tags$span(icon("upload"), "Optional: processing info (txt)"), 
                                   accept = c(".txt")), style="color: #555759;"),
@@ -204,7 +205,7 @@ You can use the 'PAUSE', 'BACKWARD', and 'UNDO' buttons to pause point collectio
                                    tags$i(class = "glyphicon glyphicon-question-sign", 
                                           style = "color:#0072B2;",
                                           title = "To expedite image processing, the image on the right is displayed at the reduced scale you've chosen. Larger values may extend processing time but reduce discrepancies in your processed image when viewed at its original scale. min = 1%, max = 100%.")), 
-                                 min = 1, max = 100, value = 20),
+                                 min = 1, max = 100, value = 10),
                     helpText("Note: Viweing scale should be set prior to cropping.
                              If you need to change the scale while/after cropping, update the scale, and then reset/redo cropping."),
                     hr(),
@@ -378,7 +379,7 @@ You can use the 'PAUSE', 'BACKWARD', and 'UNDO' buttons to pause point collectio
                     style = "color:#0072B2;",
                     title = "Your original questioned impression is displayed."))),
            shinycssloaders::withSpinner(plotOutput("plot8",
-                                                   height = "700px"), proxy.height = "50px")),
+                                                   width = "90%", height = "auto"), proxy.height = "50px")),
     column(3, align = "center",class = 'column_w_bar',
            h4(tags$span(
              icon("image"), "Reference", 
@@ -386,7 +387,7 @@ You can use the 'PAUSE', 'BACKWARD', and 'UNDO' buttons to pause point collectio
                     style = "color:#0072B2;",
                     title = "Your original reference impression is displayed."))),
            shinycssloaders::withSpinner(plotOutput("plot7",
-                                                   height = "700px"), proxy.height = "50px")),
+                                                   width = "90%", height = "auto"), proxy.height = "50px")),
     column(3, align = "center",class = 'column_w_bar',
            h4(tags$span(
              icon("image"), "Overlay (aligned)", 
@@ -417,487 +418,134 @@ get_os <- function() {
   }
 }
 
-# Several functions used in server 
-wrapper_f <- function(ref_input, questioned_input, 
-                      ref_org, questioned_org,
-                      scale_down_factor = 1, 
-                      set.angles = seq(-30, 30, by = 0.5), 
-                      padding_before_rotation = FALSE){
-  
-  
-  progress <- shiny::Progress$new()
-  # Make sure it closes when we exit this reactive, even if there's an error
-  on.exit(progress$close())
-  s_time <- Sys.time()
-  
-  progress$set(message = "Alignment in progress", detail = "processing prints in original scale and matching size..", value = 0.1)
-  
-  ref_org <- magick2cimg(ref_org); questioned_org <- magick2cimg(questioned_org)
-  
-  
-  ref_input <- magick2cimg(ref_input) %>% 
-    rm.alpha() %>% 
-    grayscale()
-  questioned_input <- magick2cimg(questioned_input) %>% 
-    rm.alpha() %>% 
-    grayscale()
-  
-  ### Image size to ensure no cropping after maximum rotation
-  if(dim(ref_org)[4]>1){
-    white1.r <- "white"
-  }else{
-    white1.r <- 1
-  }
-  if(dim(questioned_org)[4]>1){
-    white1.q <- "white"
-  }else{
-    white1.q <- 1
-  }
-  # 
-  # if(padding_before_rotation == TRUE){
-  #   d1 <- dim(ref_input)
-  #   d2 <- dim(questioned_input)
-  #   
-  #   max.angle <- max(abs(set.angles))*pi/180
-  #   
-  #   max.r.w <- as.integer(cos(max.angle) * (d1[1] + 5) + cos(pi/2-max.angle) * (d1[2] + 5)) - d1[1]
-  #   if(mod(max.r.w, 2)>0){max.r.w <- max.r.w + 1}
-  #   max.r.h <- as.integer(sin(max.angle) * (d1[1] + 5) + sin(pi/2-max.angle) * (d1[2] + 5)) - d1[2]
-  #   if(mod(max.r.h, 2)>0){max.r.h <- max.r.h + 1}
-  #   
-  #   max.q.w <- as.integer(cos(max.angle) * (d2[1] + 5) + cos(pi/2-max.angle) * (d2[2] + 5)) - d2[1]
-  #   if(mod(max.q.w, 2)>0){max.q.w <- max.q.w + 1}
-  #   max.q.h <- as.integer(sin(max.angle) * (d2[1] + 5) + sin(pi/2-max.angle) * (d2[2] + 5)) - d2[2]
-  #   if(mod(max.q.h, 2)>0){max.q.h <- max.q.h + 1}
-  #   
-  #   ref_input <- ref_input %>%
-  #     pad(max.r.w, "x", pos = 0, val = 1) %>%
-  #     pad(max.r.h, "y", pos = 0, val = 1)
-  #   questioned_input <- questioned_input %>%
-  #     pad(max.q.w, "x", pos = 0, val = 1) %>%
-  #     pad(max.q.h, "y", pos = 0, val = 1)
-  #   
-  #   ref_org <- ref_org %>%
-  #     pad(max.r.w, "x", pos = 0, val = white1.r) %>%
-  #     pad(max.r.h, "y", pos = 0, val = white1.r)
-  #   questioned_org <- questioned_org %>%
-  #     pad(max.q.w, "x", pos = 0, val = white1.q) %>%
-  #     pad(max.q.h, "y", pos = 0, val = white1.q)
-  #   
-  #   padding_info <- list(r = list(w = max.r.w/2, h = max.r.h/2, direction = "both"),
-  #                        q = list(w = max.q.w/2, h = max.q.h/2, direction = "both"))
-  #   
-  #   
-  # }else{
-  #   padding_info <- list(r = list(w = 0, h = 0, direction = "both"),
-  #                        q = list(w = 0, h = 0, direction = "both"))
-  # }
-  
-  
-  # dx <- org.dim.r$width - org.dim.q$width
-  # dy <- org.dim.r$height - org.dim.q$height
-  # 
-  # mod1 <- 32-mod(max(org.dim.r$width, org.dim.q$width), 32); if(mod1==32){mod1 <- 0}
-  # mod2 <- 32-mod(max(org.dim.r$height, org.dim.q$height), 32); if(mod2==32){mod2 <- 0}
-  # 
-  # if(dx>0){
-  #   questioned_input <- questioned_input %>%
-  #     pad(dx + mod1, "x", pos = 1, val = 1)
-  #   
-  #   if(mod1 > 0){
-  #     ref_input <- ref_input %>%
-  #       pad(mod1, "x", pos = 1, val = 1)
-  #   }
-  # }else{
-  #   ref_input <- ref_input %>%
-  #     pad(abs(dx) + mod1, "x", pos = 1, val = 1)
-  #   
-  #   if(mod1 > 0){
-  #     questioned_input <- questioned_input %>%
-  #       pad(mod1, "x", pos = 1, val = 1)
-  #   }
-  # }
-  # 
-  # if(dy>0){
-  #   questioned_input <- questioned_input %>%
-  #     pad(dy + mod2, "y", pos = 1, val = 1)
-  #   
-  #   if(mod2 > 0){
-  #     ref_input <- ref_input %>%
-  #       pad(mod2, "y", pos = 1, val = 1)
-  #   }
-  # }else{
-  #   
-  #   ref_input <- ref_input %>%
-  #     pad(abs(dy) + mod2, "y", pos = 1, val = 1)
-  #   
-  #   if(mod2 > 0){
-  #     questioned_input <- questioned_input %>%
-  #       pad(mod2, "y", pos = 1, val = 1)
-  #     
-  #   }
-  # }
-  
-  
-  
-  # Ensure that the size of inputs are identical to each other, which is multiple of 32 for integer size.
-  d1 <- dim(ref_input)
-  d2 <- dim(questioned_input)
-  
-  mod1 <- 32-mod(max(d1[1], d2[1]), 32); if(mod1==32){mod1 <- 0}
-  mod2 <- 32-mod(max(d1[2], d2[2]), 32); if(mod2==32){mod2 <- 0}
-  dx <- d1[1]-d2[1]
-  dy <- d1[2]-d2[2]
-  
-  
-  if(dx>0){
-    questioned_input <- questioned_input %>%
-      pad(dx + mod1, "x", pos = 1, val = 1)
-    questioned_org <- questioned_org %>%
-      pad(dx + mod1, "x", pos = 1, val = white1.q)
-    
-    if(mod1 > 0){
-      ref_input <- ref_input %>%
-        pad(mod1, "x", pos = 1, val = 1)
-      ref_org <- ref_org %>%
-        pad(mod1, "x", pos = 1, val = white1.r)
-    }
-  }else{
-    ref_input <- ref_input %>%
-      pad(abs(dx) + mod1, "x", pos = 1, val = 1)
-    ref_org <- ref_org %>%
-      pad(abs(dx) + mod1, "x", pos = 1, val = white1.r)
-    if(mod1 > 0){
-      questioned_input <- questioned_input %>%
-        pad(mod1, "x", pos = 1, val = 1)
-      questioned_org <- questioned_org %>%
-        pad(mod1, "x", pos = 1, val = white1.q)
-    }
+xcorr3d_optimized <- function(img1 = NULL, img2, precomputed_img1_sd_fft = NULL){
+  # Handle input cases: either img1 or precomputed values
+  if (!is.null(img1)) {
+    img1 <- img1 - mean(img1)
+    img1_sd <- sd(as.vector(img1))
+    precomputed_img1_fft <- Conj(fft(img1))
+  } else if (!is.null(precomputed_img1_sd_fft)) {
+    img1_sd <- precomputed_img1_sd_fft$sd
+    precomputed_img1_fft <- precomputed_img1_sd_fft$fft
+  } else {
+    stop("Either img1 or precomputed_img1_sd_fft must be provided.")
   }
   
-  if(dy>0){
-    questioned_input <- questioned_input %>%
-      pad(dy + mod2, "y", pos = 1, val = 1)
-    questioned_org <- questioned_org %>%
-      pad(dy + mod2, "y", pos = 1, val = white1.q)
-    
-    if(mod2 > 0){
-      ref_input <- ref_input %>%
-        pad(mod2, "y", pos = 1, val = 1)
-      ref_org <- ref_org %>%
-        pad(mod2, "y", pos = 1, val = white1.r)
-    }
-  }else{
-    
-    ref_input <- ref_input %>%
-      pad(abs(dy) + mod2, "y", pos = 1, val = 1)
-    ref_org <- ref_org %>%
-      pad(abs(dy) + mod2, "y", pos = 1, val = white1.r)
-    
-    if(mod2 > 0){
-      questioned_input <- questioned_input %>%
-        pad(mod2, "y", pos = 1, val = 1)
-      questioned_org <- questioned_org %>%
-        pad(mod2, "y", pos = 1, val = white1.q)
-    }
-  }
-  # new.d1 <- dim(ref_input); new.d2 <- dim(questioned_input)
-  # 
-  # padding_info$r$w <- c(padding_info$r$w, new.d1[1]-d1[1])
-  # padding_info$r$h <- c(padding_info$r$h, new.d1[2]-d1[2])
-  # padding_info$r$direction <- c(padding_info$r$direction, "east")
-  # 
-  # padding_info$q$w <- c(padding_info$q$w, new.d2[1]-d2[1])
-  # padding_info$q$h <- c(padding_info$q$h, new.d2[2]-d2[2])
-  # padding_info$q$direction <- c(padding_info$r$direction, "south")
+  # Subtract mean from img2
+  img2 <- img2 - mean(img2)
   
+  # Compute FFT and cross-correlation
+  IMG2 <- fft(img2)
+  R <- precomputed_img1_fft * IMG2
+  r.shift <- fft(R, inverse = TRUE) / length(R)
+  r <- imagefx::fftshift(Re(r.shift))
   
-  cx.32multiple <- dim(questioned_input)[1]/2; cy.32multiple <- dim(questioned_input)[2]/2;
-  cx.32multiple.downscale <- cx.32multiple*scale_down_factor; cy.32multiple.downscale <- cy.32multiple*scale_down_factor;
+  # Compute normalization factor
+  img2_sd <- sd(as.vector(img2))
+  norm_factor <- length(img2) * img1_sd * img2_sd
+  r.norm <- r / norm_factor
   
-  scale_down_factor
-  d1 <- Sys.time()-s_time; d1.t <- round(d1, 2); d1.u <- units(d1)
-  progress$inc(0.1, detail = paste("reducing images..(", d1.t, " ", d1.u, ").", sep = ""))
+  # Find maximum correlation
+  max.cor <- max(r.norm)
+  max_index <- which.max(r.norm)
+  max_inds_abs <- arrayInd(max_index, dim(r.norm)) - (dim(r.norm) / 2)
   
-  # To compute the best alignment
-  angles_seq <- set.angles
-  if(scale_down_factor == 1/1){
-    ref_reduced <- ref_input
-  }else{
-    if(scale_down_factor == 1/2){
-      ref_reduced <- ref_input %>%
-        resize_halfXY()
-    }else{
-      if(scale_down_factor == 1/4){
-        ref_reduced <- ref_input %>%
-          resize_halfXY() %>%
-          resize_halfXY()
-      }else{
-        if(scale_down_factor == 1/8){
-          ref_reduced <- ref_input %>%
-            resize_halfXY() %>%
-            resize_halfXY() %>%
-            resize_halfXY()
-        }else{
-          if(scale_down_factor == 1/16){
-            ref_reduced <- ref_input %>%
-              resize_halfXY() %>%
-              resize_halfXY() %>%
-              resize_halfXY() %>%
-              resize_halfXY()
-          }else{
-            if(scale_down_factor == 1/32){
-              ref_reduced <- ref_input %>%
-                resize_halfXY() %>%
-                resize_halfXY() %>%
-                resize_halfXY() %>%
-                resize_halfXY() %>%
-                resize_halfXY()
-            }}}}}}
+  # Adjust for zero frequency offsets
+  zero.freq <- ifelse(dim(r.norm) %% 2 == 0, -1, -1.5)
+  max.inds <- max_inds_abs + zero.freq
+  max.inds <- max.inds[1, ]  # Handle multiple peaks
   
-  if(scale_down_factor == 1/1){
-    questioned_reduced <- questioned_input
-  }else{
-    if(scale_down_factor == 1/2){
-      questioned_reduced <- questioned_input %>%
-        resize_halfXY()
-    }else{
-      if(scale_down_factor == 1/4){
-        questioned_reduced <- questioned_input %>%
-          resize_halfXY() %>%
-          resize_halfXY()
-      }else{
-        if(scale_down_factor == 1/8){
-          questioned_reduced <- questioned_input %>%
-            resize_halfXY() %>%
-            resize_halfXY() %>%
-            resize_halfXY()
-        }else{
-          if(scale_down_factor == 1/16){
-            questioned_reduced <- questioned_input %>%
-              resize_halfXY() %>%
-              resize_halfXY() %>%
-              resize_halfXY() %>%
-              resize_halfXY()
-          }else{
-            if(scale_down_factor == 1/32){
-              questioned_reduced <- questioned_input %>%
-                resize_halfXY() %>%
-                resize_halfXY() %>%
-                resize_halfXY() %>%
-                resize_halfXY() %>%
-                resize_halfXY()
-            }}}}}}
-  
-  # d1 <- dim(ref_reduced)
-  # d2 <- dim(questioned_reduced)
-  # 
-  # dx <- d1[1]-d2[1]
-  # dy <- d1[2]-d2[2]
-  # 
-  # questioned_reduced <- questioned_reduced[,,1,1]
-  # ref_reduced <- ref_reduced[,,1,1]
-  # if(dx>0){
-  #   questioned_reduced <- rbind(questioned_reduced, matrix(1, dx,  d2[2]))
-  # }else{
-  #   ref_reduced <- rbind(ref_reduced, matrix(1, abs(dx), d1[2]))
-  # }
-  # 
-  # new.d1 <- nrow(ref_reduced)
-  # new.d2 <- nrow(questioned_reduced)
-  # 
-  # if(dy>0){
-  #   questioned_reduced <- cbind(questioned_reduced, matrix(1, new.d2, dy))
-  # }else{
-  #   ref_reduced <- cbind(ref_reduced, matrix(1, new.d1, abs(dy)))
-  # }
-  # 
-  # ref_matrix<- ref_reduced
-  # 
-  # questioned_reduced <- as.cimg(questioned_reduced)
-  
-  ref_matrix<- ref_reduced[,,1,1]
-  res <- list()
-  tempfile.list <- tempfile(paste("res_", 1:length(angles_seq), sep = ""), fileext = ".rds")
-  for(j in 1:length(angles_seq)){
-    
-    rotated_img <- rotate.shift.over.white.bg.f(img = questioned_reduced, 
-                                                theta = angles_seq[j], 
-                                                cx.set = cx.32multiple.downscale, cy.set = cy.32multiple.downscale,
-                                                shift.x = 0,
-                                                shift.y = 0)
-    
-    
-    mat.rotated <- rotated_img[,,1,1]
-    
-    auto.cor.mat <- imagefx::xcorr3d(ref_matrix, mat.rotated)
-    
-    # res[[j]] <- auto.cor.mat 
-    saveRDS(auto.cor.mat,
-            tempfile.list[[j]])
-    
-    res[[j]] <- auto.cor.mat[1:2]
-    
-    
-    d1 <- Sys.time()-s_time; d1.t <- round(d1, 2); d1.u <- units(d1)
-    progress$inc(0.4/length(angles_seq), detail = paste("computing the best alignment..(", round(100*j/length(angles_seq)), "%; ",  d1.t, " ", d1.u, ").", sep = ""))
-  }
-  
-  d1 <- Sys.time()-s_time; d1.t <- round(d1, 2); d1.u <- units(d1)
-  progress$inc(0.1, detail = paste("applying the best alignment..(", d1.t, " ", d1.u, ").", sep = ""))
-  
-  each.res <- res
-  each.max.idx <- each.res %>%
-    map(~.x$max.corr) %>%
-    unlist()
-  each.max.idx <- which.max(each.max.idx)
-  each.angle <- set.angles[each.max.idx]
-  each.shift <- as.vector(each.res[[each.max.idx]]$max.shifts)
-  
-  
-  trans_img <- rotate.shift.over.white.bg.f(img = questioned_input, 
-                                            theta = each.angle, 
-                                            cx.set = cx.32multiple, cy.set = cy.32multiple,
-                                            shift.x = -each.shift[1]*(1/scale_down_factor),
-                                            shift.y = -each.shift[2]*(1/scale_down_factor))
-  
-  
-  trans_org <- rotate.shift.over.white.bg.f(img = questioned_org,
-                                            theta = each.angle,
-                                            cx.set = cx.32multiple, cy.set = cy.32multiple,
-                                            shift.x = -each.shift[1]*(1/scale_down_factor),
-                                            shift.y = -each.shift[2]*(1/scale_down_factor))
-  
-  
-  transform_info <- list(Angle = each.angle,
-                         X = -each.shift[1]*(1/scale_down_factor),
-                         Y = -each.shift[2]*(1/scale_down_factor))
-  
-  ## Colorizing the aligned images
-  d1 <- Sys.time()-s_time; d1.t <- round(d1, 2); d1.u <- units(d1)
-  progress$inc(0.1, detail = paste("Colorizing images..(", d1.t, " ", d1.u, ").", sep = ""))
-  
-  
-  ## Processed images; temporary padding and colorizing.
-  
-  ref_blue <- ref_input %>%
-    add.color();
-  ref_blue[,,1,3] <- 1
-  questioned_orange <- trans_img %>%
-    add.color();
-  questioned_orange[,,1,1] <- 1
-  
-  overlayed_blue_orange <- ref_blue + questioned_orange
-  
-  
-  
-  # ref_org_magick <- ref_org %>%
-  #   mirror('x') %>%
-  #   cimg2magick()
-  # trans_org_magick <- trans_org %>%
-  #   mirror('x') %>%
-  #   cimg2magick()
-  # overlayed_org <- ref_org_magick %>%
-  #   image_composite(trans_org_magick, operator = "dissolve",compose_args = "80%",
-  #                   gravity="northwest") %>%
-  #   magick2cimg()
-  
-  rr <- ref_org %>%
-    rm.alpha()
-  if(dim(rr)[4]==1){
-    rr <- add.color(rr)
-  }
-  qq <- trans_org %>%
-    rm.alpha()
-  if(dim(qq)[4]==1){
-    qq <- add.color(qq)
-  }
-  # qq <- questioned_org %>%
-  #   rm.alpha()
-  # if(dim(qq)[4]==1){
-  #   qq <- add.color(qq)
-  # }
-  overlayed_org <- rr + qq
-  
-  ## cross-correlation for alignment location info
-  
-  d1 <- Sys.time()-s_time; d1.t <- round(d1, 2); d1.u <- units(d1)
-  progress$inc(0.1, detail = paste("computing diagnosis..(", d1.t, " ", d1.u, ").", sep = ""))
-  
-  display.idx <- seq(max(1, each.max.idx-2), min(each.max.idx+2, length(angles_seq)), 1)
-  res <- display.idx %>%
-    map(~readRDS(tempfile.list[[.x]]))
-  unlink(tempfile.list)
-  
-  yy <- list()
-  for(i in 1:length(display.idx)){
-    xx <- res[[i]]$corr.mat
-    xx[xx<=quantile(xx, 0.99)] <- NA
-    yy[[i]] <- as.cimg(xx) %>% 
-      mirror('x') 
-  }
-  yy.df <- yy %>%
-    map2(display.idx,
-         ~cbind(as.data.frame(.x), rotation_angle = as.factor(paste(angles_seq[.y], 
-                                                                    "\u00B0", sep = "")))) %>% 
-    map(~.x %>%
-          mutate(x = x - round(median(x)),
-                 y = -(y - round(median(y))))) %>%
-    map_dfr(~.x)
-  align_info_p <- list(max.cross.corr_angle = data.frame(angle = angles_seq,
-                                                         max_corr = each.res %>%
-                                                           map(~.x$max.corr) %>%
-                                                           unlist()),
-                       cross.corr_map_angle = lattice::levelplot(value ~ x*y | rotation_angle, data=yy.df, 
-                                                                 xlab = 'shift_x', ylab = 'shift_y',
-                                                                 ylim = c(max(yy.df$y), min(yy.df$y)),
-                                                                 layout = c(length(display.idx), 1),
-                                                                 main = paste("Top 1% of cross-correlation by angles; scale = ", 
-                                                                              scale_down_factor, ".", sep = "")))
-  rm(res)
-  
-  
-  d1 <- Sys.time()-s_time; d1.t <- round(d1, 2); d1.u <- units(d1)
-  progress$inc(0.1, detail = paste("computing similarity..(", d1.t, " ", d1.u, ").", sep = ""))
-  
-  
-  aligned_cor <- cor(crop.bbox(trans_img, trans_img < 1),
-                     crop.bbox(ref_input, trans_img < 1))
-  
-  
-  
-  # return(list(ref_images = list(gray = ref_input,
-  #                               org_padded = ref_org),
-  #             questioned_images = list(gray = questioned_input,
-  #                                      aligned_gray = trans_img,
-  #                                      org_padded = questioned_org,
-  #                                      aligned_org_padded = trans_org),
-  #             #padding_info = padding_info,
-  #             transformed_info = transform_info,
-  #             colored_res = list(ref = ref_blue,
-  #                                questioned = questioned_orange, 
-  #                                overlayed = ref_blue/2 + questioned_orange/2),
-  #             overlayed_org = rr + qq,
-  #             similarity_cor = aligned_cor,
-  #             align_info_p = align_info_p))
-  
-  return(list(ref_images = list(gray = ref_input,
-                                org_padded = ref_org),
-              questioned_images = list(gray = questioned_input,
-                                       aligned_gray = trans_img,
-                                       aligned_org = trans_org,
-                                       org_padded = questioned_org),
-              transformed_info = transform_info,
-              colored_res = list(ref = ref_blue,
-                                 questioned = questioned_orange, 
-                                 overlayed = overlayed_blue_orange),
-              overlayed_org= overlayed_org,
-              similarity_cor = aligned_cor,
-              align_info_p = align_info_p))
-  
-  
-} 
+  # Return results
+  return.list <- list(
+    max.shifts = max.inds,
+    max.corr = max.cor,
+    corr.mat = r.norm
+  )
+  return(return.list)
+}
 
+
+add.color.f <- function(x){
+  x_temp <- abind::abind(x, x, along = 4);
+  x <- abind::abind(x_temp, x, along = 4); rm(x_temp);gc()
+  return(x)
+}
+
+
+rm.extension <- function(x){
+  x.split <- strsplit(x, "\\.")[[1]]
+  x.split <- x.split[-length(x.split)]
+  return(paste(x.split, collapse = "."))
+}
+
+
+downscale_image <- function(img, factor) {
+  for (i in seq_len(log2(1/factor))) img <- img %>% resize_halfXY()
+  return(img)
+}
+
+rotate_shift_image <- function(img, theta, dx, dy) {
+  if(theta!=0){
+    info <- image_info(img)
+    img_width <- info$width
+    img_height <- info$height
+    if(theta>0){
+      w <- as.integer(cos(theta)*img_width + img_height*sin(theta)); w <- w + w%%2 + 2
+      h <- as.integer(sin(theta)*img_width + img_height*cos(theta)); h <- h + w%%2 + 2
+    }else{
+      w <- as.integer(cos(theta)*img_height + img_width*sin(theta)); w <- w + w%%2 + 2
+      h <- as.integer(sin(theta)*img_height + img_width*cos(theta)); h <- h + w%%2 + 2
+    }
+    img <- img %>%
+      image_extent(paste0(w,'x',h), color = "white"); gc()
+    rotated <- image_rotate(img, theta); rm(img); gc()
+    
+    cx <- w/2
+    cy <- h/2
+    
+    # Compute top-left crop coordinates
+    x_crop <- as.integer(max(0, cx - img_width / 2))
+    y_crop <- as.integer(max(0, cy - img_height / 2))
+    
+    # Crop the image
+    rotated <- image_crop(rotated, sprintf("%dx%d+%d+%d", img_width, img_height, x_crop, y_crop)); gc()
+  }else{
+    rotated <- img; gc()
+  }
+  if(dx != 0 | dy != 0){
+    # Get image dimensions
+    info <- image_info(rotated)
+    img_width <- info$width
+    img_height <- info$height
+    
+    # Compute cropping coordinates
+    crop_x <- ifelse(dx >= 0, 0, -dx)  # Crop from left if shifting right, from right if shifting left
+    crop_y <- ifelse(dy >= 0, 0, -dy)  # Crop from top if shifting down, from bottom if shifting up
+    crop_w <- img_width - abs(dx)  # Remaining width
+    crop_h <- img_height - abs(dy) # Remaining height
+    
+    # Ensure valid cropping dimensions
+    if (crop_w <= 0 || crop_h <= 0) {
+      stop("Shift is too large; no image remains after cropping.")
+    }
+    
+    # Crop the part that remains visible after the shift
+    cropped <- image_crop(rotated, sprintf("%dx%d+%d+%d", crop_w, crop_h, crop_x, crop_y)); rm(rotated); gc()
+    
+    # Determine gravity based on shift direction
+    gravity <- case_when(
+      dx >= 0 & dy >= 0 ~ "SouthEast",  # Shift right & down
+      dx >= 0 & dy < 0  ~ "NorthEast",  # Shift right & up
+      dx < 0 & dy >= 0  ~ "SouthWest",  # Shift left & down
+      dx < 0 & dy < 0  ~ "NorthWest"   # Shift left & up
+    )
+    
+    # Extend back to original size with correct alignment
+    shifted <- image_extent(cropped, sprintf("%dx%d", img_width, img_height), gravity = gravity, color = "white"); rm(cropped); gc()
+    
+    return(shifted)
+  }else(return(rotated))
+}
 
 rotate.shift.over.white.bg.f <- function(img, theta = 0, cx.set, cy.set, shift.x = 0, shift.y = 0){
   # img.d <- dim(img)
@@ -1007,23 +655,77 @@ determine.display.scale.f <- function(x){
         return(x)
       }}}}
 
+is_local <- function() {
+  # If running in RStudio (interactive local session)
+  if (interactive() && Sys.getenv("RSTUDIO") == "1") {
+    return(TRUE)
+  }
+  
+  # If running on shinyapps.io (or other deployment)
+  if (!is.null(Sys.getenv("SHINY_PORT")) && Sys.getenv("SHINY_PORT") != "") {
+    return(FALSE)
+  }
+  
+  return(TRUE)  # Default to local if no environment is detected
+}
 
 
 # Server logic 
 server <- function(input, output, session) {
-  ########### To load FILE1 and create its downscale for faster display #################  
-  loaded1 <- reactive({
+  # # Memory cleanup when session ends
+  # onStop(function() {
+  #   print("Restarting R to free up memory.")
+  #   .rs.restartR()  # Restarts the R session
+  # }) # For local Shiny app with RSTUDIO
+  # 
+  # session$onSessionEnded(function() {
+  #   # print("Session ended: Restarting app...")
+  #   rsconnect::restartApp("ShoeprintAnalyzr")
+  # }) # For deployed Shiny app
+  if (is_local()) {
+    onStop(function() {
+      print("Restarting R to free up memory.")
+      if (exists(".rs.restartR", mode = "function")) {
+        .rs.restartR()  # Restart only if in RStudio
+      } else {
+        print("Restart function not available.")
+      }
+    })
+  } else {
+    session$onSessionEnded(function() {
+      print("Session ended: Restarting app...")
+      rsconnect::restartApp("ShoeprintAnalyzr")
+    })
+  }
+  
+  
+  ########### To load FILE1 and create its downscale for faster display ################# 
+  # Output the info of FILE1
+  cached_img1 <- reactiveVal(); cached_info1 <- reactiveVal(); cached_view1 <- reactiveVal()
+  loaded1_info_reactive <- observeEvent(input$file1,{
     file <- input$file1
-    ext <- tools::file_ext(file$datapath)
     
     req(file)
-    validate(need(ext %in% c("png", "jpg", "jpeg", "PNG", "JPG", "JPEG", "tiff", "tif", "TIFF", "TIF"), "Please upload a png, jpeg, tiff file."))
-    img1 <- image_read(file$datapath) 
-    return(img1)
-  }) %>%
-    bindCache(input$file1, cache = "app") %>%
-    bindEvent(input$file1)
+    ext <- tolower(tools::file_ext(file$datapath))
+    
+    # Check MIME type
+    mimetype <- mime::guess_type(file$datapath)
+    
+    validate(
+      need(ext %in% c("png", "jpg", "jpeg", "tiff", "tif"), "Please upload a png, jpeg, tiff file."),
+      need(mimetype %in% c("image/png", "image/jpeg", "image/tiff"), "Invalid MIME type.")
+    )
+    
+    img1 <- magick::image_read(file$datapath) #  try(magick::image_read(file$datapath), silent = TRUE)
+    R_viewing_reduced <- tempfile(pattern = "R", tmpdir =  temp_directory, fileext = ".png")
+    cached_view1(R_viewing_reduced)
+    image_write(img1 %>%
+                  image_scale(geometry = "25%"), path = R_viewing_reduced); gc()
+    cached_img1(file$datapath); cached_info1(magick::image_info(img1))
+    rm(img1);gc()
+  })
   
+ 
   
   loaded1_process_info <- reactive({
     file <- input$file1_supp
@@ -1035,34 +737,37 @@ server <- function(input, output, session) {
     return(info)
   })
   
-  
-  # Output the info of FILE1
-  
-  loaded1_info_reactive <- eventReactive(input$file1,{
-    
-    print(image_info(loaded1()))
-  })
   output$loaded1_info <- renderPrint({
-    
-    loaded1_info_reactive()
+    req(cached_info1())
+    print(cached_info1())
     
   })
   
   #######################################################################################  
-  
-  ########### To load FILE2 and create its downscale for faster display #################  
-  loaded2 <- reactive({
+  # Output the info of FILE1
+  cached_img2 <- reactiveVal(); cached_info2 <- reactiveVal(); cached_view2 <- reactiveVal()
+  loaded2_info_reactive <- observeEvent(input$file2,{
     file <- input$file2
-    ext <- tools::file_ext(file$datapath)
     
     req(file)
-    validate(need(ext %in% c("png", "jpg", "jpeg", "PNG", "JPG", "JPEG", "tiff", "tif", "TIFF", "TIF"), "Please upload a png, jpeg, tiff file."))
-    img1 <- image_read(file$datapath) 
-    return(img1)
-  }) %>%
-    bindCache(input$file2, cache = "app") %>%
-    bindEvent(input$file2)
-  
+    ext <- tolower(tools::file_ext(file$datapath))
+    
+    # Check MIME type
+    mimetype <- mime::guess_type(file$datapath)
+    
+    validate(
+      need(ext %in% c("png", "jpg", "jpeg", "tiff", "tif"), "Please upload a png, jpeg, tiff file."),
+      need(mimetype %in% c("image/png", "image/jpeg", "image/tiff"), "Invalid MIME type.")
+    )
+    
+    img2 <- magick::image_read(file$datapath) #  try(magick::image_read(file$datapath), silent = TRUE)
+    Q_viewing_reduced <- tempfile(pattern = "Q", tmpdir =  temp_directory, fileext = ".png")
+    cached_view2(Q_viewing_reduced)
+    image_write(img2 %>%
+                  image_scale(geometry = "25%"), path = Q_viewing_reduced); gc()
+    cached_img2(file$datapath); cached_info2(magick::image_info(img2))
+    rm(img2);gc()
+  })
   loaded2_process_info <- reactive({
     file <- input$file2_supp
     ext <- tools::file_ext(file$datapath)
@@ -1074,16 +779,62 @@ server <- function(input, output, session) {
   })
   
   # Output the info of FILE2
-  loaded2_info_reactive <- eventReactive(input$file2,{
-    print(loaded2())
-  })
   output$loaded2_info <- renderPrint({
-    loaded2_info_reactive()
+    req(cached_info2())
+    print(cached_info2())
+    
   })
-  
-  
   #######################################################################################  
   
+  match_dim <- reactive({
+    req(input$file1, input$file2)  # Ensure both files exist
+    
+    ref_info <- cached_info1()
+    d1 <- c(ref_info$width, ref_info$height)
+    questioned_info <- cached_info2()
+    d2 <- c(questioned_info$width, questioned_info$height)
+    
+    mod1 <- 32 - mod(max(d1[1], d2[1]), 32)
+    if (mod1 == 32) mod1 <- 0
+    mod2 <- 32 - mod(max(d1[2], d2[2]), 32)
+    if (mod2 == 32) mod2 <- 0
+    
+    dx <- d1[1] - d2[1]
+    dy <- d1[2] - d2[2]
+    
+    image_name <-c(paste("original_", c(rm.extension(input$file1$name),
+                                        rm.extension(input$file2$name)), ".png", sep = ""),
+                   paste("original_reduced_", rm.extension(input$file1$name), ".png", sep = ""),
+                   paste("original_aligned_", rm.extension(input$file2$name), ".png", sep = ""),
+                   c("overlay_original.png", "overlay_original_reduced.png"),
+                   paste("mask_", c(rm.extension(input$file1$name),
+                                    rm.extension(input$file2$name)), ".png", sep = ""),
+                   paste("processed_", c(rm.extension(input$file1$name),
+                                         rm.extension(input$file2$name)), ".png", sep = ""),
+                   paste("processed_aligned_", rm.extension(input$file2$name), ".png", sep = ""),
+                   paste("reduced_", c(rm.extension(input$file1$name),
+                                       rm.extension(input$file2$name)), ".rds", sep = ""),
+                   paste("blue_", rm.extension(input$file1$name), ".png", sep = ""),
+                   paste("orange_", rm.extension(input$file2$name), ".png", sep = ""),
+                   c("R_blue_reduced.png", "Q_orange_aligned_reduced.png"),
+                   c("overlay_blue_orange.png", "overlay_blue_orange_reduced.png"))
+    temp_file <- as.list(file.path(temp_directory, image_name)); names(temp_file) <- c("R_original", "Q_original", "R_original_reduced",
+                                                                                       "Q_original_aligned",
+                                                                                       "overlay_original", "overlay_original_reduced",
+                                                                                       "R_mask", "Q_mask",
+                                                                                       "R_processed", "Q_processed", "Q_processed_aligned",
+                                                                                       "R_reduced_matrix", "Q_reduced_img",
+                                                                                       "R_blue", "Q_orange_aligned",
+                                                                                       "R_blue_reduced", "Q_orange_aligned_reduced",
+                                                                                       "overlay_processed", "overlay_processed_reduced")
+    
+    # Update reactive list
+    list(mod1 = mod1, mod2 = mod2,
+         dx = dx, dy = dy,
+         temp_file = temp_file)
+  })
+  
+  ####################################################################################### 
   
   ########### Interactive settings to edit FILE1 #################
   v <- reactiveValues(crop.img = FALSE,
@@ -1360,7 +1111,8 @@ server <- function(input, output, session) {
   
   ########### To plot FILE1 being edited in a reduced scale #############
   loaded1_processed_plot <- reactive({
-    before_crop <- loaded1() %>%
+    req(cached_img1()) 
+    before_crop <- magick::image_read(cached_img1()) %>% # loaded1() %>%
       image_scale(geometry = paste(input$loaded1_zoom_percent, "%", sep = ""))
     img_info <- image_info(before_crop)
     
@@ -1408,8 +1160,8 @@ server <- function(input, output, session) {
                               threshold = paste(min(input$Threshold1)*100-0.000001, "%", sep = ""))
             
             before_crop <- image_composite(lower.thresholding1, lower.thresholding2, "minus") %>%
-              image_negate() 
-            rm(lower.thresholding1);rm(lower.thresholding2)
+              image_negate()
+            rm(lower.thresholding1);rm(lower.thresholding2);gc()
           }
           
           
@@ -1435,8 +1187,8 @@ server <- function(input, output, session) {
                               threshold = paste(min(input$Threshold1)*100-0.000001, "%", sep = ""))
             
             before_crop <- image_composite(lower.thresholding1, lower.thresholding2, "minus") %>%
-              image_negate() 
-            rm(lower.thresholding1);rm(lower.thresholding2)
+              image_negate()
+            rm(lower.thresholding1);rm(lower.thresholding2);gc()
           }
           
         }}
@@ -1460,10 +1212,10 @@ server <- function(input, output, session) {
           as.cimg() %>%
           cimg2magick() %>%
           image_flip() %>%
-          image_flop()
+          image_flop(); rm(r); gc()
         
         
-        after_crop <- image_composite(before_crop, image_transparent(mask1, "black"), "over")
+        after_crop <- image_composite(before_crop, image_transparent(mask1, "black"), "over") 
         
         return(list(ggplot_img = image_ggplot_modified(after_crop),
                     magick_img = after_crop,
@@ -1536,8 +1288,8 @@ server <- function(input, output, session) {
                               threshold = paste(unique(cond$threshold_lower)*100-0.000001, "%", sep = ""))
             
             before_crop <- image_composite(lower.thresholding1, lower.thresholding2, "minus") %>%
-              image_negate() 
-            rm(lower.thresholding1);rm(lower.thresholding2)
+              image_negate()
+            rm(lower.thresholding1);rm(lower.thresholding2);gc()
           }
           
         }else{
@@ -1560,8 +1312,8 @@ server <- function(input, output, session) {
                               threshold = paste(unique(cond$threshold_lower)*100-0.000001, "%", sep = ""))
             
             before_crop <- image_composite(lower.thresholding1, lower.thresholding2, "minus") %>%
-              image_negate() 
-            rm(lower.thresholding1);rm(lower.thresholding2)
+              image_negate()
+            rm(lower.thresholding1);rm(lower.thresholding2);gc()
           }
           
         }}
@@ -1587,10 +1339,10 @@ server <- function(input, output, session) {
           as.cimg() %>%
           cimg2magick() %>%
           image_flip() %>%
-          image_flop()
+          image_flop() ; rm(r); gc()
         
         
-        after_crop <- image_composite(before_crop, image_transparent(mask1, "black"), "over")
+        after_crop <- image_composite(before_crop, image_transparent(mask1, "black"), "over") 
         
         return(list(ggplot_img = image_ggplot_modified(after_crop),
                     magick_img = after_crop,
@@ -1609,115 +1361,112 @@ server <- function(input, output, session) {
     bindCache(input$file1, input$makeitgray, input$preinvert, input$Threshold1, v$complete.crop, input$loaded1_zoom_percent,image_data$single_click,
               input$file1_supp, cache = "app")
   
-  
+  universal_matched_info <- reactiveVal(list())
   loaded1_processed <- reactive({
     
+    req(cached_img1()); req(cached_info1())
     
     progress <- shiny::Progress$new()
     # Make sure it closes when we exit this reactive, even if there's an error
     on.exit(progress$close())
     
     progress$set(message = "Processing Reference print..", value = 0.3)
-    s_time <- Sys.time() 
-    before_crop <- loaded1() 
-    img_info <- image_info(before_crop)
+    s_time <- cached_time()# Sys.time()
+    before_crop <- magick::image_read(cached_img1()) #loaded1()
+    img_info <- cached_info1()
+    
+    
+    
+    pre_computed_info <- match_dim()
+    dx <- pre_computed_info$dx; dy <- pre_computed_info$dy;
+    mod1 <- pre_computed_info$mod1; mod2 <- pre_computed_info$mod2;
+    temp_file <- pre_computed_info$temp_file
+    
+    
+    ref_org <- before_crop
+    if(dx>0){
+      if(mod1 > 0){
+        ref_org <- image_extent(ref_org, 
+                                paste0(img_info$width + mod1, "x", img_info$height), 
+                                gravity = "west", color = "white")}}else{
+                                  ref_org <- image_extent(ref_org, 
+                                                          paste0(img_info$width + abs(dx) + mod1, "x", img_info$height), 
+                                                          gravity = "west", color = "white")}; gc()
+    new.width <- image_info(ref_org)$width - img_info$width
+    if(dy>0){
+      if(mod2 > 0){
+        ref_org <- image_extent(ref_org, 
+                                paste0(img_info$width + new.width, "x", img_info$height + mod2), 
+                                gravity = "north", color = "white")}}else{
+                                  ref_org <- image_extent(ref_org, 
+                                                          paste0(img_info$width + new.width, "x", img_info$height + abs(dy) + mod2), 
+                                                          gravity = "north", color = "white")}; gc()
+    
+    image_write(ref_org, path = temp_file$R_original)
+    image_write(ref_org %>%
+                  image_scale(geometry = "25%"), path = temp_file$R_original_reduced)
+    rm(ref_org); gc()
+    
+    
     
     
     if(is.null(input$file1_supp)){
-      if(input$makeitgray == TRUE & img_info$colorspace != "Gray"){
+      if(img_info$colorspace != "Gray"){
         
         before_crop <- before_crop %>%
           image_convert(colorspace = "gray")
         
       }
       if(input$preinvert == TRUE){ # faster computation
-        if(img_info$colorspace != "Gray"){
-          before_crop <- before_crop %>%
-            image_convert(colorspace = "gray") %>%
-            image_negate()
-        }else{
-          before_crop <- before_crop %>%
-            image_negate()
-        }
+        
+        before_crop <- before_crop %>%
+          image_negate()
+        
       }
       
       
       # if(input$Threshold1<100){
       if(min(input$Threshold1)!=0 | max(input$Threshold1) != 1){
-        if(img_info$colorspace != "Gray"){
-          # before_crop <- before_crop %>%
-          #   image_convert(colorspace = "gray") %>%
-          #   image_threshold(type = "white",
-          #                   threshold = paste(input$Threshold1, "%", sep = ""))%>%
-          #   image_threshold(type = "black",
-          #                   threshold = paste(input$Threshold1, "%", sep = ""))
-          
+        # before_crop <- before_crop %>%
+        #   image_threshold(type = "white",
+        #                   threshold = paste(input$Threshold1, "%", sep = ""))%>%
+        #   image_threshold(type = "black",
+        #                   threshold = paste(input$Threshold1, "%", sep = ""))
+        
+        if(max(input$Threshold1)!=1){
           before_crop <- before_crop %>%
-            image_convert(colorspace = "gray")
+            image_threshold(type = "white",
+                            threshold = paste(max(input$Threshold1)*100, "%", sep = ""))
+        }
+        
+        if(min(input$Threshold1)!=0){
+          lower.thresholding1 <- before_crop %>%
+            image_threshold(type = "black",
+                            threshold = paste(min(input$Threshold1)*100, "%", sep = ""))
           
-          if(max(input$Threshold1)!=1){
-            before_crop <- before_crop %>%
-              image_threshold(type = "white",
-                              threshold = paste(max(input$Threshold1)*100, "%", sep = ""))
-          }
+          lower.thresholding2 <- before_crop %>%
+            image_threshold(type = "white",
+                            threshold = paste(min(input$Threshold1)*100-0.000001, "%", sep = "")) %>%
+            image_threshold(type = "black",
+                            threshold = paste(min(input$Threshold1)*100-0.000001, "%", sep = ""))
           
-          if(min(input$Threshold1)!=0){
-            lower.thresholding1 <- before_crop %>%
-              image_threshold(type = "black",
-                              threshold = paste(min(input$Threshold1)*100, "%", sep = ""))
-            
-            lower.thresholding2 <- before_crop %>%
-              image_threshold(type = "white",
-                              threshold = paste(min(input$Threshold1)*100-0.000001, "%", sep = "")) %>%
-              image_threshold(type = "black",
-                              threshold = paste(min(input$Threshold1)*100-0.000001, "%", sep = ""))
-            
-            before_crop <- image_composite(lower.thresholding1, lower.thresholding2, "minus") %>%
-              image_negate() 
-            rm(lower.thresholding1);rm(lower.thresholding2)
-          }
-          
-        }else{
-          # before_crop <- before_crop %>%
-          #   image_threshold(type = "white",
-          #                   threshold = paste(input$Threshold1, "%", sep = ""))%>%
-          #   image_threshold(type = "black",
-          #                   threshold = paste(input$Threshold1, "%", sep = ""))
-          
-          if(max(input$Threshold1)!=1){
-            before_crop <- before_crop %>%
-              image_threshold(type = "white",
-                              threshold = paste(max(input$Threshold1)*100, "%", sep = ""))
-          }
-          
-          if(min(input$Threshold1)!=0){
-            lower.thresholding1 <- before_crop %>%
-              image_threshold(type = "black",
-                              threshold = paste(min(input$Threshold1)*100, "%", sep = ""))
-            
-            lower.thresholding2 <- before_crop %>%
-              image_threshold(type = "white",
-                              threshold = paste(min(input$Threshold1)*100-0.000001, "%", sep = "")) %>%
-              image_threshold(type = "black",
-                              threshold = paste(min(input$Threshold1)*100-0.000001, "%", sep = ""))
-            
-            before_crop <- image_composite(lower.thresholding1, lower.thresholding2, "minus") %>%
-              image_negate() 
-            rm(lower.thresholding1);rm(lower.thresholding2)
-          }
-          
-        }}
+          before_crop <- image_composite(lower.thresholding1, lower.thresholding2, "minus") %>%
+            image_negate()
+          rm(lower.thresholding1);rm(lower.thresholding2);gc()
+        }
+        
+      }
       
       # if(input$Threshold1>0){
       #   before_crop <- magick2cimg(before_crop)
-      #   
+      #
       #   if(img_info$colorspace != "Gray"){
       #     before_crop <- grayscale(before_crop)
       #     before_crop[before_crop<input$Threshold1] <- 0; before_crop[before_crop>0] <- 1
       #   }else{
       #     before_crop[before_crop<input$Threshold1] <- 0; before_crop[before_crop>0] <- 1
       #   }
-      #   
+      #
       #   before_crop <- before_crop %>%
       #     mirror('x') %>%
       #     cimg2magick()
@@ -1748,48 +1497,157 @@ server <- function(input, output, session) {
           as.cimg() %>%
           cimg2magick() %>%
           image_flip() %>%
-          image_flop()
+          image_flop(); rm(r); gc()
         
         
-        after_crop <- image_composite(before_crop, image_transparent(mask1, "black"), "over")
+        # after_crop <- image_composite(before_crop, image_transparent(mask1, "black"), "over") %>%
+        #   magick2cimg() %>%
+        #   rm.alpha() %>% 
+        #   grayscale(); rm(before_crop); gc()
+        
+        after_crop <- image_composite(before_crop, image_transparent(mask1, "black"), "over") %>%
+          image_convert(colorspace = "gray"); rm(before_crop); gc()
         
         
-        d1 <- Sys.time()-s_time; d1.t <- round(d1, 2); d1.u <- units(d1)
-        progress$inc(0.3, detail = paste("Complete..(", d1.t, " ", d1.u, ").", sep = ""))
         
-        return(list(ggplot_img = image_ggplot_modified(after_crop),
-                    magick_img = after_crop,
-                    mask = mask1,
+        
+        image_write(mask1, path = temp_file$R_mask)
+        rm(mask1); gc()
+        
+        
+        if(dx>0){
+          if(mod1 > 0){
+            after_crop <- image_extent(after_crop, 
+                                       paste0(img_info$width + mod1, "x", img_info$height), 
+                                       gravity = "west", color = "white")}}else{
+                                         after_crop <- image_extent(after_crop, 
+                                                                    paste0(img_info$width + abs(dx) + mod1, "x", img_info$height), 
+                                                                    gravity = "west", color = "white")}; gc()
+        new.width <- image_info(after_crop)$width - img_info$width
+        if(dy>0){
+          if(mod2 > 0){
+            after_crop <- image_extent(after_crop, 
+                                       paste0(img_info$width + new.width, "x", img_info$height + mod2), 
+                                       gravity = "north", color = "white")}}else{
+                                         after_crop <- image_extent(after_crop, 
+                                                                    paste0(img_info$width + new.width, "x", img_info$height + abs(dy) + mod2), 
+                                                                    gravity = "north", color = "white")}; gc()
+        
+        
+        scale_down_factor <- eval(parse(text = input$Entered_scale_down_factor))
+        info <- image_info(after_crop); universal_matched_info(list(cx.32multiple = info$width / 2,
+                                                                    cy.32multiple = info$height / 2,
+                                                                    cx.32multiple.downscale = info$width / 2 * scale_down_factor,
+                                                                    cy.32multiple.downscale = info$height / 2 * scale_down_factor))
+        
+        
+        ref_reduced <- if(scale_down_factor < 1){
+          image_resize(after_crop, paste0(info$width*scale_down_factor, "x", info$height*scale_down_factor)) %>%
+            magick2cimg()
+        }else{after_crop %>%
+            magick2cimg()}; 
+        saveRDS(ref_reduced[,,1,1], file = temp_file$R_reduced_matrix); rm(ref_reduced); gc()
+        
+        
+        
+        image_write(after_crop, path = temp_file$R_processed)
+        
+        # Create a white image of the same size
+        img_white <- image_blank(info$width, info$height, color = "white"); gc()
+        
+        # Use CopyRedCompositeOp to replace the Red channel in the target image
+        after_crop <- after_crop %>%
+          image_convert(colorspace = "sRGB")
+        
+        after_crop <- image_composite(after_crop, img_white, operator = "CopyBlue"); rm(img_white); gc()
+        # Converting white to transparency should be done before resizing to avoid reduced image with black spots
+        image_write(after_crop  %>%
+                      image_scale(geometry = "25%"), path = temp_file$R_blue_reduced); gc()
+        # after_crop <- after_crop %>%
+        #   image_transparent("white"); gc()
+        image_write(after_crop, path = temp_file$R_blue);
+        rm(after_crop); gc()
+        
+        
+        
+        return(list(img = temp_file$R_processed,
+                    mask = temp_file$R_mask,
                     mask_xy = hole))
-        
       }else{
         
         
-        d1 <- Sys.time()-s_time; d1.t <- round(d1, 2); d1.u <- units(d1)
-        progress$inc(0.7, detail = paste("Complete..(", d1.t, " ", d1.u, ").", sep = ""))
+        after_crop <- before_crop; rm(before_crop); gc()
         
-        return(list(ggplot_img = image_ggplot_modified(before_crop),
-                    magick_img = before_crop,
+        if(dx>0){
+          if(mod1 > 0){
+            after_crop <- image_extent(after_crop, 
+                                       paste0(img_info$width + mod1, "x", img_info$height), 
+                                       gravity = "west", color = "white")}}else{
+                                         after_crop <- image_extent(after_crop, 
+                                                                    paste0(img_info$width + abs(dx) + mod1, "x", img_info$height), 
+                                                                    gravity = "west", color = "white")}; gc()
+        new.width <- image_info(after_crop)$width - img_info$width
+        if(dy>0){
+          if(mod2 > 0){
+            after_crop <- image_extent(after_crop, 
+                                       paste0(img_info$width + new.width, "x", img_info$height + mod2), 
+                                       gravity = "north", color = "white")}}else{
+                                         after_crop <- image_extent(after_crop, 
+                                                                    paste0(img_info$width + new.width, "x", img_info$height + abs(dy) + mod2), 
+                                                                    gravity = "north", color = "white")}; gc()
+        
+        
+        scale_down_factor <- eval(parse(text = input$Entered_scale_down_factor))
+        info <- image_info(after_crop);  universal_matched_info(list(cx.32multiple = info$width / 2,
+                                                                     cy.32multiple = info$height / 2,
+                                                                     cx.32multiple.downscale = info$width / 2 * scale_down_factor,
+                                                                     cy.32multiple.downscale = info$height / 2 * scale_down_factor))
+        
+        
+        ref_reduced <- if(scale_down_factor < 1){
+          image_resize(after_crop, paste0(info$width*scale_down_factor, "x", info$height*scale_down_factor)) %>%
+            magick2cimg()
+        }else{after_crop %>%
+            magick2cimg()}; 
+        
+        saveRDS(ref_reduced[,,1,1], file = temp_file$R_reduced_matrix); rm(ref_reduced); gc()
+        
+        image_write(after_crop, path = temp_file$R_processed)
+        
+        # Create a white image of the same size
+        img_white <- image_blank(info$width, info$height, color = "white"); gc()
+        
+        # Use CopyRedCompositeOp to replace the Red channel in the target image
+        after_crop <- after_crop %>%
+          image_convert(colorspace = "sRGB")
+        
+        after_crop <- image_composite(after_crop, img_white, operator = "CopyBlue"); rm(img_white); gc()
+        # Converting white to transparency should be done before resizing to avoid reduced image with black spots
+        image_write(after_crop  %>%
+                      image_scale(geometry = "25%"), path = temp_file$R_blue_reduced); gc()
+        # after_crop <- after_crop %>%
+        #   image_transparent("white"); gc()
+        image_write(after_crop, path = temp_file$R_blue);
+        rm(after_crop); gc()
+        
+        
+        return(list(img = temp_file$R_processed,
                     mask = NULL,
                     mask_xy = NULL))
       }
     }else{
       cond <- loaded1_process_info()
       
-      if(unique(cond$grayscale) == TRUE & img_info$colorspace != "Gray"){
+      if(img_info$colorspace != "Gray"){
         before_crop <- before_crop %>%
           image_convert(colorspace = "gray")
       }
       
       if(unique(cond$invert) == TRUE){ # faster computation
-        if(img_info$colorspace != "Gray"){
-          before_crop <- before_crop %>%
-            image_convert(colorspace = "gray") %>%
-            image_negate()
-        }else{
-          before_crop <- before_crop %>%
-            image_negate()
-        }
+        
+        before_crop <- before_crop %>%
+          image_negate()
+        
       }
       
       # if(unique(cond$threshold)<100){
@@ -1809,58 +1667,30 @@ server <- function(input, output, session) {
       #   }}
       
       if(unique(cond$threshold_lower)!=0 | unique(cond$threshold_upper) != 1){
-        if(img_info$colorspace != "Gray"){
-          
+        
+        if(unique(cond$threshold_upper)!=1){
           before_crop <- before_crop %>%
-            image_convert(colorspace = "gray")
+            image_threshold(type = "white",
+                            threshold = paste(unique(cond$threshold_upper)*100, "%", sep = ""))
+        }
+        
+        if(unique(cond$threshold_lower)!=0){
+          lower.thresholding1 <- before_crop %>%
+            image_threshold(type = "black",
+                            threshold = paste(unique(cond$threshold_lower)*100, "%", sep = ""))
           
-          if(unique(cond$threshold_upper)!=1){
-            before_crop <- before_crop %>%
-              image_threshold(type = "white",
-                              threshold = paste(unique(cond$threshold_upper)*100, "%", sep = ""))
-          }
+          lower.thresholding2 <- before_crop %>%
+            image_threshold(type = "white",
+                            threshold = paste(unique(cond$threshold_lower)*100-0.000001, "%", sep = "")) %>%
+            image_threshold(type = "black",
+                            threshold = paste(unique(cond$threshold_lower)*100-0.000001, "%", sep = ""))
           
-          if(unique(cond$threshold_lower)!=0){
-            lower.thresholding1 <- before_crop %>%
-              image_threshold(type = "black",
-                              threshold = paste(unique(cond$threshold_lower)*100, "%", sep = ""))
-            
-            lower.thresholding2 <- before_crop %>%
-              image_threshold(type = "white",
-                              threshold = paste(unique(cond$threshold_lower)*100-0.000001, "%", sep = "")) %>%
-              image_threshold(type = "black",
-                              threshold = paste(unique(cond$threshold_lower)*100-0.000001, "%", sep = ""))
-            
-            before_crop <- image_composite(lower.thresholding1, lower.thresholding2, "minus") %>%
-              image_negate() 
-            rm(lower.thresholding1);rm(lower.thresholding2)
-          }
-          
-        }else{
-          
-          if(unique(cond$threshold_upper)!=1){
-            before_crop <- before_crop %>%
-              image_threshold(type = "white",
-                              threshold = paste(unique(cond$threshold_upper)*100, "%", sep = ""))
-          }
-          
-          if(unique(cond$threshold_lower)!=0){
-            lower.thresholding1 <- before_crop %>%
-              image_threshold(type = "black",
-                              threshold = paste(unique(cond$threshold_lower)*100, "%", sep = ""))
-            
-            lower.thresholding2 <- before_crop %>%
-              image_threshold(type = "white",
-                              threshold = paste(unique(cond$threshold_lower)*100-0.000001, "%", sep = "")) %>%
-              image_threshold(type = "black",
-                              threshold = paste(unique(cond$threshold_lower)*100-0.000001, "%", sep = ""))
-            
-            before_crop <- image_composite(lower.thresholding1, lower.thresholding2, "minus") %>%
-              image_negate() 
-            rm(lower.thresholding1);rm(lower.thresholding2)
-          }
-          
-        }}
+          before_crop <- image_composite(lower.thresholding1, lower.thresholding2, "minus") %>%
+            image_negate()
+          rm(lower.thresholding1);rm(lower.thresholding2);gc()
+        }
+        
+      }
       
       if(!is.null(cond$x) & !is.null(cond$y)){
         p1 <- rbind(c(0,0),
@@ -1881,19 +1711,128 @@ server <- function(input, output, session) {
           as.cimg() %>%
           cimg2magick() %>%
           image_flip() %>%
-          image_flop()
+          image_flop(); rm(r); gc()
         
         
-        after_crop <- image_composite(before_crop, image_transparent(mask1, "black"), "over")
+        # after_crop <- image_composite(before_crop, image_transparent(mask1, "black"), "over") %>%
+        #   magick2cimg() %>%
+        #   rm.alpha() %>% 
+        #   grayscale(); rm(before_crop); gc()
         
-        return(list(ggplot_img = image_ggplot_modified(after_crop),
-                    magick_img = after_crop,
-                    mask = mask1,
+        after_crop <- image_composite(before_crop, image_transparent(mask1, "black"), "over") %>%
+          image_convert(colorspace = "gray"); rm(before_crop); gc()
+        
+        
+        image_write(mask1, path = temp_file$R_mask)
+        rm(mask1); gc()
+        
+        
+        if(dx>0){
+          if(mod1 > 0){
+            after_crop <- image_extent(after_crop, 
+                                       paste0(img_info$width + mod1, "x", img_info$height), 
+                                       gravity = "west", color = "white")}}else{
+                                         after_crop <- image_extent(after_crop, 
+                                                                    paste0(img_info$width + abs(dx) + mod1, "x", img_info$height), 
+                                                                    gravity = "west", color = "white")}; gc()
+        new.width <- image_info(after_crop)$width - img_info$width
+        if(dy>0){
+          if(mod2 > 0){
+            after_crop <- image_extent(after_crop, 
+                                       paste0(img_info$width + new.width, "x", img_info$height + mod2), 
+                                       gravity = "north", color = "white")}}else{
+                                         after_crop <- image_extent(after_crop, 
+                                                                    paste0(img_info$width + new.width, "x", img_info$height + abs(dy) + mod2), 
+                                                                    gravity = "north", color = "white")}; gc()
+        
+        scale_down_factor <- eval(parse(text = input$Entered_scale_down_factor))
+        info <- image_info(after_crop);  universal_matched_info(list(cx.32multiple = info$width / 2,
+                                                                     cy.32multiple = info$height / 2,
+                                                                     cx.32multiple.downscale = info$width / 2 * scale_down_factor,
+                                                                     cy.32multiple.downscale = info$height / 2 * scale_down_factor))
+        
+        ref_reduced <- if(scale_down_factor < 1){
+          image_resize(after_crop, paste0(info$width*scale_down_factor, "x", info$height*scale_down_factor)) %>%
+            magick2cimg()
+        }else{after_crop %>%
+            magick2cimg()}; 
+        saveRDS(ref_reduced[,,1,1], file = temp_file$R_reduced_matrix); rm(ref_reduced); gc()
+        
+        image_write(after_crop, path = temp_file$R_processed)
+        
+        # Create a white image of the same size
+        img_white <- image_blank(info$width, info$height, color = "white"); gc()
+        
+        # Use CopyRedCompositeOp to replace the Red channel in the target image
+        after_crop <- after_crop %>%
+          image_convert(colorspace = "sRGB")
+        
+        after_crop <- image_composite(after_crop, img_white, operator = "CopyBlue"); rm(img_white); gc()
+        # Converting white to transparency should be done before resizing to avoid reduced image with black spots
+        image_write(after_crop  %>%
+                      image_scale(geometry = "25%"), path = temp_file$R_blue_reduced); gc()
+        # after_crop <- after_crop %>%
+        #   image_transparent("white"); gc()
+        image_write(after_crop, path = temp_file$R_blue);
+        rm(after_crop); gc()
+        
+        return(list(img = temp_file$R_processed,
+                    mask = temp_file$R_mask,
                     mask_xy = hole))
       }else{
+        after_crop <- before_crop; rm(before_crop); gc()
         
-        return(list(ggplot_img = image_ggplot_modified(before_crop),
-                    magick_img = before_crop,
+        if(dx>0){
+          if(mod1 > 0){
+            after_crop <- image_extent(after_crop, 
+                                       paste0(img_info$width + mod1, "x", img_info$height), 
+                                       gravity = "west", color = "white")}}else{
+                                         after_crop <- image_extent(after_crop, 
+                                                                    paste0(img_info$width + abs(dx) + mod1, "x", img_info$height), 
+                                                                    gravity = "west", color = "white")}; gc()
+        new.width <- image_info(after_crop)$width - img_info$width
+        if(dy>0){
+          if(mod2 > 0){
+            after_crop <- image_extent(after_crop, 
+                                       paste0(img_info$width + new.width, "x", img_info$height + mod2), 
+                                       gravity = "north", color = "white")}}else{
+                                         after_crop <- image_extent(after_crop, 
+                                                                    paste0(img_info$width + new.width, "x", img_info$height + abs(dy) + mod2), 
+                                                                    gravity = "north", color = "white")}; gc()
+        
+        scale_down_factor <- eval(parse(text = input$Entered_scale_down_factor))
+        info <- image_info(after_crop);  universal_matched_info(list(cx.32multiple = info$width / 2,
+                                                                     cy.32multiple = info$height / 2,
+                                                                     cx.32multiple.downscale = info$width / 2 * scale_down_factor,
+                                                                     cy.32multiple.downscale = info$height / 2 * scale_down_factor))
+        
+        ref_reduced <- if(scale_down_factor < 1){
+          image_resize(after_crop, paste0(info$width*scale_down_factor, "x", info$height*scale_down_factor)) %>%
+            magick2cimg()
+        }else{after_crop %>%
+            magick2cimg()}; 
+        saveRDS(ref_reduced[,,1,1], file = temp_file$R_reduced_matrix); rm(ref_reduced); gc()
+        
+        image_write(after_crop, path = temp_file$R_processed)
+        
+        
+        # Create a white image of the same size
+        img_white <- image_blank(info$width, info$height, color = "white"); gc()
+        
+        # Use CopyRedCompositeOp to replace the Red channel in the target image
+        after_crop <- after_crop %>%
+          image_convert(colorspace = "sRGB")
+        
+        after_crop <- image_composite(after_crop, img_white, operator = "CopyBlue"); rm(img_white); gc()
+        # Converting white to transparency should be done before resizing to avoid reduced image with black spots
+        image_write(after_crop  %>%
+                      image_scale(geometry = "25%"), path = temp_file$R_blue_reduced); gc()
+        # after_crop <- after_crop %>%
+        #   image_transparent("white"); gc()
+        image_write(after_crop, path = temp_file$R_blue);
+        rm(after_crop); gc()
+        
+        return(list(img = temp_file$R_processed,
                     mask = NULL,
                     mask_xy = NULL))
         
@@ -1902,6 +1841,8 @@ server <- function(input, output, session) {
   }) %>%
     bindCache(input$file1, input$makeitgray, input$preinvert, input$Threshold1, v$complete.crop, input$loaded1_zoom_percent, image_data$single_click,
               input$file1_supp, cache = "app")
+  
+  
   
   plot1.f <- function(){
     if(v$complete.crop == TRUE){
@@ -1955,12 +1896,15 @@ server <- function(input, output, session) {
         imsub(x>=out$xmin & x <= out$xmax)%>%
         imsub(y>=out$ymin & y <= out$ymax)
       
+      initial_thr <- round(autothresholdr::auto_thresh(as.integer(img*255), method = "Otsu")[[1]]/255, 2)
+      
       lattice::levelplot(value ~ x*y ,
                          data=img %>% mirror('y') %>% as.data.frame(),
                          col.regions = gray(0:255/256),
                          scales=list(x = list(draw = FALSE),
                                      y = list(draw = FALSE)),
-                         aspect = dim(img)[2]/dim(img)[1])
+                         aspect = dim(img)[2]/dim(img)[1],
+                         main = paste("Initial threshold suggestion: ", initial_thr, sep = ""))
     }
   })
   
@@ -1971,7 +1915,8 @@ server <- function(input, output, session) {
   
   ########### To plot FILE2 being edited in a reduced scale #############
   loaded2_processed_plot <- reactive({
-    before_crop <- loaded2() %>%
+    req(cached_img2())
+    before_crop <- magick::image_read(cached_img2()) %>% #loaded2() %>%
       image_scale(geometry = paste(input$loaded2_zoom_percent, "%", sep = ""))
     img_info <- image_info(before_crop)
     
@@ -2017,7 +1962,7 @@ server <- function(input, output, session) {
             
             before_crop <- image_composite(lower.thresholding1, lower.thresholding2, "minus") %>%
               image_negate() 
-            rm(lower.thresholding1);rm(lower.thresholding2)
+            rm(lower.thresholding1);rm(lower.thresholding2);gc()
           }
           
         }else{
@@ -2041,7 +1986,7 @@ server <- function(input, output, session) {
             
             before_crop <- image_composite(lower.thresholding1, lower.thresholding2, "minus") %>%
               image_negate() 
-            rm(lower.thresholding1);rm(lower.thresholding2)
+            rm(lower.thresholding1);rm(lower.thresholding2);gc()
           }
         }}
       
@@ -2065,11 +2010,10 @@ server <- function(input, output, session) {
           as.cimg() %>%
           cimg2magick() %>%
           image_flip() %>%
-          image_flop()
+          image_flop(); rm(r); gc()
         
         
         after_crop <- image_composite(before_crop, image_transparent(mask1, "black"), "over")
-        
         return(list(ggplot_img = image_ggplot_modified(after_crop),
                     magick_img = after_crop,
                     mask = mask1,
@@ -2126,7 +2070,7 @@ server <- function(input, output, session) {
             
             before_crop <- image_composite(lower.thresholding1, lower.thresholding2, "minus") %>%
               image_negate() 
-            rm(lower.thresholding1);rm(lower.thresholding2)
+            rm(lower.thresholding1);rm(lower.thresholding2);gc()
           }
           
         }else{
@@ -2150,7 +2094,7 @@ server <- function(input, output, session) {
             
             before_crop <- image_composite(lower.thresholding1, lower.thresholding2, "minus") %>%
               image_negate() 
-            rm(lower.thresholding1);rm(lower.thresholding2)
+            rm(lower.thresholding1);rm(lower.thresholding2);gc()
           }
           
         }}
@@ -2176,10 +2120,10 @@ server <- function(input, output, session) {
           as.cimg() %>%
           cimg2magick() %>%
           image_flip() %>%
-          image_flop()
+          image_flop(); rm(r); gc()
         
         
-        after_crop <- image_composite(before_crop, image_transparent(mask1, "black"), "over")
+        after_crop <- image_composite(before_crop, image_transparent(mask1, "black"), "over") 
         
         return(list(ggplot_img = image_ggplot_modified(after_crop),
                     magick_img = after_crop,
@@ -2201,99 +2145,90 @@ server <- function(input, output, session) {
   
   
   loaded2_processed <- reactive({
+    req(cached_img2()); req(cached_info2())
     
     progress <- shiny::Progress$new()
     # Make sure it closes when we exit this reactive, even if there's an error
     on.exit(progress$close())
     
     progress$set(message = "Processing Questioned print..", value = 0.3)
-    s_time <- Sys.time()
+    s_time <- cached_time() #Sys.time()
     
-    before_crop <- loaded2() 
-    img_info <- image_info(before_crop)
+    before_crop <- magick::image_read(cached_img2()) # loaded2() 
+    img_info <- cached_info2()
+    
+    pre_computed_info <- match_dim()
+    dx <- pre_computed_info$dx; dy <- pre_computed_info$dy;
+    mod1 <- pre_computed_info$mod1; mod2 <- pre_computed_info$mod2;
+    temp_file <- pre_computed_info$temp_file
+    
+    
+    
+    questioned_org <- before_crop
+    if(dx>0){
+      questioned_org <- image_extent(questioned_org, 
+                                     paste0(img_info$width + dx + mod1, "x", img_info$height), 
+                                     gravity = "west", color = "white")}else{
+                                       if(mod1 > 0){
+                                         questioned_org <- image_extent(questioned_org, 
+                                                                        paste0(img_info$width + mod1, "x", img_info$height), 
+                                                                        gravity = "west", color = "white")}}; gc()
+    new.width <- image_info(questioned_org)$width - img_info$width
+    if(dy>0){
+      questioned_org <- image_extent(questioned_org, 
+                                     paste0(img_info$width + new.width, "x", img_info$height + dy + mod2), 
+                                     gravity = "north", color = "white")}else{
+                                       if(mod2 > 0){
+                                         questioned_org <- image_extent(questioned_org, 
+                                                                        paste0(img_info$width + new.width, "x", img_info$height + mod2), 
+                                                                        gravity = "north", color = "white")}}; gc()
+    
+    image_write(questioned_org, path = temp_file$Q_original)
+    rm(questioned_org); gc()
     
     if(is.null(input$file2_supp)){
-      if(input$makeitgray2 == TRUE & img_info$colorspace != "Gray"){
+      if(img_info$colorspace != "Gray"){
         before_crop <- before_crop %>%
           image_convert(colorspace = "gray")
       }
       
       if(input$preinvert2 == TRUE){ # faster computation
-        if(img_info$colorspace != "Gray"){
-          before_crop <- before_crop %>%
-            image_convert(colorspace = "gray") %>%
-            image_negate()
-        }else{
-          before_crop <- before_crop %>%
-            image_negate()
-        }
+        before_crop <- before_crop %>%
+          image_negate()
       }
       
       
       if(min(input$Threshold2)!=0 | max(input$Threshold2) != 1){
-        if(img_info$colorspace != "Gray"){
-          # before_crop <- before_crop %>%
-          #   image_convert(colorspace = "gray") %>%
-          #   image_threshold(type = "white",
-          #                   threshold = paste(input$Threshold2, "%", sep = ""))%>%
-          #   image_threshold(type = "black",
-          #                   threshold = paste(input$Threshold2, "%", sep = ""))
-          
-          
+        
+        # before_crop <- before_crop %>%
+        #   image_threshold(type = "white",
+        #                   threshold = paste(input$Threshold2, "%", sep = ""))%>%
+        #   image_threshold(type = "black",
+        #                   threshold = paste(input$Threshold2, "%", sep = ""))
+        
+        
+        if(max(input$Threshold2)!=1){
           before_crop <- before_crop %>%
-            image_convert(colorspace = "gray")
+            image_threshold(type = "white",
+                            threshold = paste(max(input$Threshold2)*100, "%", sep = ""))
+        }
+        
+        if(min(input$Threshold2)!=0){
+          lower.thresholding1 <- before_crop %>%
+            image_threshold(type = "black",
+                            threshold = paste(min(input$Threshold2)*100, "%", sep = ""))
           
-          if(max(input$Threshold2)!=1){
-            before_crop <- before_crop %>%
-              image_threshold(type = "white",
-                              threshold = paste(max(input$Threshold2)*100, "%", sep = ""))
-          }
+          lower.thresholding2 <- before_crop %>%
+            image_threshold(type = "white",
+                            threshold = paste(min(input$Threshold2)*100-0.000001, "%", sep = "")) %>%
+            image_threshold(type = "black",
+                            threshold = paste(min(input$Threshold2)*100-0.000001, "%", sep = ""))
           
-          if(min(input$Threshold2)!=0){
-            lower.thresholding1 <- before_crop %>%
-              image_threshold(type = "black",
-                              threshold = paste(min(input$Threshold2)*100, "%", sep = ""))
-            
-            lower.thresholding2 <- before_crop %>%
-              image_threshold(type = "white",
-                              threshold = paste(min(input$Threshold2)*100-0.000001, "%", sep = "")) %>%
-              image_threshold(type = "black",
-                              threshold = paste(min(input$Threshold2)*100-0.000001, "%", sep = ""))
-            
-            before_crop <- image_composite(lower.thresholding1, lower.thresholding2, "minus") %>%
-              image_negate() 
-            rm(lower.thresholding1);rm(lower.thresholding2)
-          }
-        }else{
-          # before_crop <- before_crop %>%
-          #   image_threshold(type = "white",
-          #                   threshold = paste(input$Threshold2, "%", sep = ""))%>%
-          #   image_threshold(type = "black",
-          #                   threshold = paste(input$Threshold2, "%", sep = ""))
-          
-          
-          if(max(input$Threshold2)!=1){
-            before_crop <- before_crop %>%
-              image_threshold(type = "white",
-                              threshold = paste(max(input$Threshold2)*100, "%", sep = ""))
-          }
-          
-          if(min(input$Threshold2)!=0){
-            lower.thresholding1 <- before_crop %>%
-              image_threshold(type = "black",
-                              threshold = paste(min(input$Threshold2)*100, "%", sep = ""))
-            
-            lower.thresholding2 <- before_crop %>%
-              image_threshold(type = "white",
-                              threshold = paste(min(input$Threshold2)*100-0.000001, "%", sep = "")) %>%
-              image_threshold(type = "black",
-                              threshold = paste(min(input$Threshold2)*100-0.000001, "%", sep = ""))
-            
-            before_crop <- image_composite(lower.thresholding1, lower.thresholding2, "minus") %>%
-              image_negate() 
-            rm(lower.thresholding1);rm(lower.thresholding2)
-          }
-        }}
+          before_crop <- image_composite(lower.thresholding1, lower.thresholding2, "minus") %>%
+            image_negate() 
+          rm(lower.thresholding1);rm(lower.thresholding2);gc()
+        }
+      }
       
       if(u$complete.crop == TRUE){
         
@@ -2323,117 +2258,141 @@ server <- function(input, output, session) {
           as.cimg() %>%
           cimg2magick() %>%
           image_flip() %>%
-          image_flop()
+          image_flop(); rm(r); gc()
         
         
-        after_crop <- image_composite(before_crop, image_transparent(mask1, "black"), "over")
+        after_crop <- image_composite(before_crop, image_transparent(mask1, "black"), "over") %>%
+          image_convert(colorspace = "gray"); rm(before_crop); gc()
         
         
-        d1 <- Sys.time()-s_time; d1.t <- round(d1, 2); d1.u <- units(d1)
-        progress$inc(0.3, detail = paste("Complete..(", d1.t, " ", d1.u, ").", sep = ""))
+        image_write(mask1, path = temp_file$Q_mask)
+        rm(mask1); gc()
         
-        return(list(ggplot_img = image_ggplot_modified(after_crop),
-                    magick_img = after_crop,
-                    mask = mask1,
+        
+        
+        if(dx>0){
+          after_crop <- image_extent(after_crop, 
+                                     paste0(img_info$width + dx + mod1, "x", img_info$height), 
+                                     gravity = "west", color = "white")}else{
+                                       if(mod1 > 0){
+                                         after_crop <- image_extent(after_crop, 
+                                                                    paste0(img_info$width + mod1, "x", img_info$height), 
+                                                                    gravity = "west", color = "white")}}; gc()
+        new.width <- image_info(after_crop)$width - img_info$width
+        if(dy>0){
+          after_crop <- image_extent(after_crop, 
+                                     paste0(img_info$width + new.width, "x", img_info$height + dy + mod2), 
+                                     gravity = "north", color = "white")}else{
+                                       if(mod2 > 0){
+                                         after_crop <- image_extent(after_crop, 
+                                                                    paste0(img_info$width + new.width, "x", img_info$height + mod2), 
+                                                                    gravity = "north", color = "white")}}; gc()
+        
+        
+        scale_down_factor <- eval(parse(text = input$Entered_scale_down_factor))
+        info <- image_info(after_crop)
+        
+        questioned_reduced <- if(scale_down_factor < 1){
+          image_resize(after_crop, paste0(info$width*scale_down_factor, "x", info$height*scale_down_factor)) %>%
+            magick2cimg()
+        }else{after_crop %>%
+            magick2cimg()}; 
+        saveRDS(questioned_reduced, file = temp_file$Q_reduced_img); rm(questioned_reduced); gc()
+        
+        image_write(after_crop, path = temp_file$Q_processed)
+        rm(after_crop); gc()
+        
+        
+        
+        return(list(img = temp_file$Q_processed,
+                    mask = temp_file$Q_mask,
                     mask_xy = hole))
       }else{
         
         
-        d1 <- Sys.time()-s_time; d1.t <- round(d1, 2); d1.u <- units(d1)
-        progress$inc(0.7, detail = paste("Complete..(", d1.t, " ", d1.u, ").", sep = ""))
-        return(list(ggplot_img = image_ggplot_modified(before_crop),
-                    magick_img = before_crop, 
+        after_crop <- before_crop; rm(before_crop); gc()
+        
+        if(dx>0){
+          after_crop <- image_extent(after_crop, 
+                                     paste0(img_info$width + dx + mod1, "x", img_info$height), 
+                                     gravity = "west", color = "white")}else{
+                                       if(mod1 > 0){
+                                         after_crop <- image_extent(after_crop, 
+                                                                    paste0(img_info$width + mod1, "x", img_info$height), 
+                                                                    gravity = "west", color = "white")}}; gc()
+        new.width <- image_info(after_crop)$width - img_info$width
+        if(dy>0){
+          after_crop <- image_extent(after_crop, 
+                                     paste0(img_info$width + new.width, "x", img_info$height + dy + mod2), 
+                                     gravity = "north", color = "white")}else{
+                                       if(mod2 > 0){
+                                         after_crop <- image_extent(after_crop, 
+                                                                    paste0(img_info$width + new.width, "x", img_info$height + mod2), 
+                                                                    gravity = "north", color = "white")}}; gc()
+        
+        
+        scale_down_factor <- eval(parse(text = input$Entered_scale_down_factor))
+        info <- image_info(after_crop)
+        
+        
+        
+        questioned_reduced <- if(scale_down_factor < 1){
+          image_resize(after_crop, paste0(info$width*scale_down_factor, "x", info$height*scale_down_factor)) %>%
+            magick2cimg()
+        }else{after_crop %>%
+            magick2cimg()}; 
+        
+        saveRDS(questioned_reduced, file = temp_file$Q_reduced_img); rm(questioned_reduced); gc()
+        
+        image_write(after_crop, path = temp_file$Q_processed)
+        rm(after_crop); gc()
+        
+        
+        
+        return(list(img = temp_file$Q_processed,
                     mask = NULL,
                     mask_xy = NULL))
       }
     }else{
       cond <- loaded2_process_info()
       
-      if(unique(cond$grayscale) == TRUE & img_info$colorspace != "Gray"){
+      if(img_info$colorspace != "Gray"){
         before_crop <- before_crop %>%
           image_convert(colorspace = "gray")
       }
       
       if(unique(cond$invert) == TRUE){ # faster computation
-        if(img_info$colorspace != "Gray"){
-          before_crop <- before_crop %>%
-            image_convert(colorspace = "gray") %>%
-            image_negate()
-        }else{
-          before_crop <- before_crop %>%
-            image_negate()
-        }
+        
+        before_crop <- before_crop %>%
+          image_negate()
+        
       }
       
-      # if(unique(cond$threshold)<100){
-      #   if(img_info$colorspace != "Gray"){
-      #     before_crop <- before_crop %>%
-      #       image_convert(colorspace = "gray") %>%
-      #       image_threshold(type = "white",
-      #                       threshold = paste(unique(cond$threshold), "%", sep = ""))%>%
-      #       image_threshold(type = "black",
-      #                       threshold = paste(unique(cond$threshold), "%", sep = ""))
-      #   }else{
-      #     before_crop <- before_crop %>%
-      #       image_threshold(type = "white",
-      #                       threshold = paste(unique(cond$threshold), "%", sep = "")) %>%
-      #       image_threshold(type = "black",
-      #                       threshold = paste(unique(cond$threshold), "%", sep = ""))
-      #   }}
       
       if(unique(cond$threshold_lower)!=0 | unique(cond$threshold_upper) != 1){
-        if(img_info$colorspace != "Gray"){
-          
+        if(unique(cond$threshold_upper)!=1){
           before_crop <- before_crop %>%
-            image_convert(colorspace = "gray")
+            image_threshold(type = "white",
+                            threshold = paste(unique(cond$threshold_upper)*100, "%", sep = ""))
+        }
+        
+        if(unique(cond$threshold_lower)!=0){
+          lower.thresholding1 <- before_crop %>%
+            image_threshold(type = "black",
+                            threshold = paste(unique(cond$threshold_lower)*100, "%", sep = ""))
           
-          if(unique(cond$threshold_upper)!=1){
-            before_crop <- before_crop %>%
-              image_threshold(type = "white",
-                              threshold = paste(unique(cond$threshold_upper)*100, "%", sep = ""))
-          }
+          lower.thresholding2 <- before_crop %>%
+            image_threshold(type = "white",
+                            threshold = paste(unique(cond$threshold_lower)*100-0.000001, "%", sep = "")) %>%
+            image_threshold(type = "black",
+                            threshold = paste(unique(cond$threshold_lower)*100-0.000001, "%", sep = ""))
           
-          if(unique(cond$threshold_lower)!=0){
-            lower.thresholding1 <- before_crop %>%
-              image_threshold(type = "black",
-                              threshold = paste(unique(cond$threshold_lower)*100, "%", sep = ""))
-            
-            lower.thresholding2 <- before_crop %>%
-              image_threshold(type = "white",
-                              threshold = paste(unique(cond$threshold_lower)*100-0.000001, "%", sep = "")) %>%
-              image_threshold(type = "black",
-                              threshold = paste(unique(cond$threshold_lower)*100-0.000001, "%", sep = ""))
-            
-            before_crop <- image_composite(lower.thresholding1, lower.thresholding2, "minus") %>%
-              image_negate() 
-            rm(lower.thresholding1);rm(lower.thresholding2)
-          }
-          
-        }else{
-          
-          if(unique(cond$threshold_upper)!=1){
-            before_crop <- before_crop %>%
-              image_threshold(type = "white",
-                              threshold = paste(unique(cond$threshold_upper)*100, "%", sep = ""))
-          }
-          
-          if(unique(cond$threshold_lower)!=0){
-            lower.thresholding1 <- before_crop %>%
-              image_threshold(type = "black",
-                              threshold = paste(unique(cond$threshold_lower)*100, "%", sep = ""))
-            
-            lower.thresholding2 <- before_crop %>%
-              image_threshold(type = "white",
-                              threshold = paste(unique(cond$threshold_lower)*100-0.000001, "%", sep = "")) %>%
-              image_threshold(type = "black",
-                              threshold = paste(unique(cond$threshold_lower)*100-0.000001, "%", sep = ""))
-            
-            before_crop <- image_composite(lower.thresholding1, lower.thresholding2, "minus") %>%
-              image_negate() 
-            rm(lower.thresholding1);rm(lower.thresholding2)
-          }
-          
-        }}
+          before_crop <- image_composite(lower.thresholding1, lower.thresholding2, "minus") %>%
+            image_negate() 
+          rm(lower.thresholding1);rm(lower.thresholding2);gc()
+        }
+        
+      }
       
       if(!is.null(cond$x) & !is.null(cond$y)){
         p1 <- rbind(c(0,0),
@@ -2453,19 +2412,100 @@ server <- function(input, output, session) {
           as.cimg() %>%
           cimg2magick() %>%
           image_flip() %>%
-          image_flop()
+          image_flop(); rm(r); gc()
         
         
-        after_crop <- image_composite(before_crop, image_transparent(mask1, "black"), "over")
+        # after_crop <- image_composite(before_crop, image_transparent(mask1, "black"), "over") %>%
+        #   magick2cimg() %>%
+        #   rm.alpha() %>% 
+        #   grayscale(); rm(before_crop); gc()
         
-        return(list(ggplot_img = image_ggplot_modified(after_crop),
-                    magick_img = after_crop,
-                    mask = mask1,
+        
+        after_crop <- image_composite(before_crop, image_transparent(mask1, "black"), "over") %>%
+          image_convert(colorspace = "gray"); 
+        
+        
+        image_write(mask1, path = temp_file$Q_mask)
+        rm(mask1); gc()
+        
+        if(dx>0){
+          after_crop <- image_extent(after_crop, 
+                                     paste0(img_info$width + dx + mod1, "x", img_info$height), 
+                                     gravity = "west", color = "white")}else{
+                                       if(mod1 > 0){
+                                         after_crop <- image_extent(after_crop, 
+                                                                    paste0(img_info$width + mod1, "x", img_info$height), 
+                                                                    gravity = "west", color = "white")}}; gc()
+        new.width <- image_info(after_crop)$width - img_info$width
+        if(dy>0){
+          after_crop <- image_extent(after_crop, 
+                                     paste0(img_info$width + new.width, "x", img_info$height + dy + mod2), 
+                                     gravity = "north", color = "white")}else{
+                                       if(mod2 > 0){
+                                         after_crop <- image_extent(after_crop, 
+                                                                    paste0(img_info$width + new.width, "x", img_info$height + mod2), 
+                                                                    gravity = "north", color = "white")}}; gc()
+        
+        
+        scale_down_factor <- eval(parse(text = input$Entered_scale_down_factor))
+        info <- image_info(after_crop)
+        
+        questioned_reduced <- if(scale_down_factor < 1){
+          image_resize(after_crop, paste0(info$width*scale_down_factor, "x", info$height*scale_down_factor)) %>%
+            magick2cimg()
+        }else{after_crop %>%
+            magick2cimg()}; 
+        
+        saveRDS(questioned_reduced, file = temp_file$Q_reduced_img); rm(questioned_reduced); gc()
+        
+        image_write(after_crop, path = temp_file$Q_processed)
+        rm(after_crop); gc()
+        
+        
+        
+        return(list(img = temp_file$Q_processed,
+                    mask = temp_file$Q_mask,
                     mask_xy = hole))
       }else{
         
-        return(list(ggplot_img = image_ggplot_modified(before_crop),
-                    magick_img = before_crop,
+        after_crop <- before_crop; rm(before_crop); gc()
+        
+        if(dx>0){
+          after_crop <- image_extent(after_crop, 
+                                     paste0(img_info$width + dx + mod1, "x", img_info$height), 
+                                     gravity = "west", color = "white")}else{
+                                       if(mod1 > 0){
+                                         after_crop <- image_extent(after_crop, 
+                                                                    paste0(img_info$width + mod1, "x", img_info$height), 
+                                                                    gravity = "west", color = "white")}}; gc()
+        new.width <- image_info(after_crop)$width - img_info$width
+        if(dy>0){
+          after_crop <- image_extent(after_crop, 
+                                     paste0(img_info$width + new.width, "x", img_info$height + dy + mod2), 
+                                     gravity = "north", color = "white")}else{
+                                       if(mod2 > 0){
+                                         after_crop <- image_extent(after_crop, 
+                                                                    paste0(img_info$width + new.width, "x", img_info$height + mod2), 
+                                                                    gravity = "north", color = "white")}}; gc()
+        
+        
+        scale_down_factor <- eval(parse(text = input$Entered_scale_down_factor))
+        info <- image_info(after_crop)
+        
+        questioned_reduced <- if(scale_down_factor < 1){
+          image_resize(after_crop, paste0(info$width*scale_down_factor, "x", info$height*scale_down_factor)) %>%
+            magick2cimg()
+        }else{after_crop %>%
+            magick2cimg()}; 
+        
+        saveRDS(questioned_reduced, file = temp_file$Q_reduced_img); rm(questioned_reduced); gc()
+        
+        
+        image_write(after_crop, path = temp_file$Q_processed)
+        rm(after_crop); gc()
+        
+        
+        return(list(img = temp_file$Q_processed,
                     mask = NULL,
                     mask_xy = NULL))
         
@@ -2529,12 +2569,15 @@ server <- function(input, output, session) {
         imsub(x>=out$xmin & x <= out$xmax)%>%
         imsub(y>=out$ymin & y <= out$ymax)
       
+      initial_thr <- round(autothresholdr::auto_thresh(as.integer(img*255), method = "Otsu")[[1]]/255, 2)
+      
       lattice::levelplot(value ~ x*y ,
                          data=img %>% mirror('y') %>% as.data.frame(),
                          col.regions = gray(0:255/256),
                          scales=list(x = list(draw = FALSE),
                                      y = list(draw = FALSE)),
-                         aspect = dim(img)[2]/dim(img)[1])
+                         aspect = dim(img)[2]/dim(img)[1],
+                         main = paste("Initial threshold suggestion: ", initial_thr, sep = ""))
     }
   })
   #######################################################################
@@ -2567,158 +2610,455 @@ server <- function(input, output, session) {
   
   
   ########### To find the best alignment between the edited FILE1 and FILE2 #############
-  aligned_res <- reactive({
+  cached_aligned <- reactiveVal(); cached_time <- reactiveVal()
+  aligned_res <- observeEvent(input$submit, {
+    cached_time(Sys.time())
+    req(cached_img1())
+    req(cached_img2())
+    req(cached_info1())
+    req(cached_info2())
+    req(match_dim())
+    req(loaded1_processed())
+    req(loaded2_processed())
+    req(universal_matched_info())
     
-    res <- wrapper_f(loaded1_processed()$magick_img,
-                     loaded2_processed()$magick_img,
-                     loaded1(),
-                     loaded2(),
-                     scale_down_factor = eval(parse(text = input$Entered_scale_down_factor)),
-                     seq(min(input$Angle_range), max(input$Angle_range), by = 0.5))
+    time_at_alignment <- format(Sys.time(),'tmp_%Y%m%d_%H%M%S')
     
-    return(list(processed_res = res,
-                temporary_dir = temp_directory))
+    progress <- shiny::Progress$new()
+    # Make sure it closes when we exit this reactive, even if there's an error
+    on.exit(progress$close())
+    # s_time <- Sys.time()
+    s_time <- cached_time()
     
     
-  }) %>%
-    bindCache(input$file1, input$makeitgray, input$preinvert, input$Threshold1, v$complete.crop,
-              input$file2, input$makeitgray2, input$preinvert2, input$Threshold2, u$complete.crop,
-              input$Entered_scale_down_factor, cache = "app") %>%
-    bindEvent(input$submit)
-  
+    temp_file <- match_dim()$temp_file
+    
+    
+    progress$set(message = "Alignment in progress", detail = "processing prints in original scale and matching size..", value = 0.1)
+    
+    
+    scale_down_factor <- eval(parse(text = input$Entered_scale_down_factor))
+    set.angles <- seq(min(input$Angle_range), max(input$Angle_range), by = 0.5)
+    
+    
+    center_info <- universal_matched_info()
+    cx.32multiple <- center_info$cx.32multiple
+    cy.32multiple <- center_info$cy.32multiple
+    cx.32multiple.downscale <- center_info$cx.32multiple.downscale
+    cy.32multiple.downscale <- center_info$cy.32multiple.downscale
+    
+    ref_reduced <- readRDS(temp_file$R_reduced_matrix); questioned_reduced <- readRDS(temp_file$Q_reduced_img)
+    # To compute the best alignment
+    precomputed_ref_sd_fft <- list(sd = sd(as.vector(ref_reduced)),
+                                   fft = Conj(fft(ref_reduced - mean(ref_reduced)))); rm(ref_reduced); gc()
+    res <- list()
+    tempfile.list <- tempfile(paste("res_", 1:length(set.angles), sep = ""), tmpdir = temp_directory, fileext = ".rds")
+    
+    for(j in 1:length(set.angles)){
+      
+      rotated_img <- rotate.shift.over.white.bg.f(img = questioned_reduced, 
+                                                  theta = set.angles[j], 
+                                                  cx.set = cx.32multiple.downscale, cy.set = cy.32multiple.downscale,
+                                                  shift.x = 0,
+                                                  shift.y = 0)
+      
+      
+      auto.cor.mat <- xcorr3d_optimized(img2 = rotated_img[,,1,1], precomputed_img1_sd_fft = precomputed_ref_sd_fft)
+      saveRDS(auto.cor.mat,
+              tempfile.list[[j]])
+      
+      res[[j]] <- auto.cor.mat[1:2]
+      
+      
+      d1 <- Sys.time()-s_time; d1.t <- round(d1, 2); d1.u <- units(d1)
+      progress$inc(0.4/length(set.angles), detail = paste("computing the best alignment..(", round(100*j/length(set.angles)), "%; ",  d1.t, " ", d1.u, ").", sep = ""))
+    }
+    rm(rotated_img, precomputed_ref_sd_fft); gc()
+    
+    each.max.idx <- res %>%
+      map(~.x$max.corr) %>%
+      unlist()
+    each.max.idx <- which.max(each.max.idx)
+    each.angle <- set.angles[each.max.idx]
+    each.shift <- as.vector(res[[each.max.idx]]$max.shifts)
+    
+    
+    ## Returned outputs   
+    transformed_info <- list(Angle = each.angle,
+                             X = -each.shift[1]*(1/scale_down_factor),
+                             Y = -each.shift[2]*(1/scale_down_factor),
+                             cx = cx.32multiple,
+                             cy = cy.32multiple)
+    
+    
+    d1 <- Sys.time()-s_time; d1.t <- round(d1, 2); d1.u <- units(d1)
+    progress$inc(0.1, detail = paste("applying the best alignment..(", d1.t, " ", d1.u, ").", sep = ""))
+    # 
+    # questioned_input <- load.image(temp_file$Q_processed) 
+    # trans_img <- rotate.shift.over.white.bg.f(img = questioned_input, 
+    #                                           theta = transformed_info$Angle, 
+    #                                           cx.set = transformed_info$cx, cy.set = transformed_info$cy,
+    #                                           shift.x = transformed_info$X,
+    #                                           shift.y = transformed_info$Y)
+    # rm(questioned_input);gc()
+    
+    
+    questioned_input <- image_read(temp_file$Q_processed) 
+    trans_img <- rotate_shift_image(img = questioned_input, 
+                                    theta = transformed_info$Angle, 
+                                    dx = transformed_info$X,
+                                    dy = transformed_info$Y)
+    rm(questioned_input);gc()
+    image_write(trans_img, path = temp_file$Q_processed_aligned);
+    image_write(trans_img, path = "qa.png");
+    trans_img <- trans_img %>% magick2cimg(); gc()
+    
+    d1 <- Sys.time()-s_time; d1.t <- round(d1, 2); d1.u <- units(d1)
+    progress$inc(0.1, detail = paste("computing similarity..(", d1.t, " ", d1.u, ").", sep = ""))
+    
+    
+    ref_input <- load.image(temp_file$R_processed) 
+    aligned_cor <- cor(crop.bbox(ref_input, trans_img < 1),
+                       crop.bbox(trans_img, trans_img < 1)); rm(ref_input); gc()
+    # 
+    # save.image(trans_img, file = temp_file$Q_processed_aligned);
+    
+    
+    
+    ## Colorizing the aligned images
+    d1 <- Sys.time()-s_time; d1.t <- round(d1, 2); d1.u <- units(d1)
+    progress$inc(0.1, detail = paste("Colorizing images..(", d1.t, " ", d1.u, ").", sep = ""))
+    
+    questioned_orange <- image_read(temp_file$Q_processed_aligned) %>%
+      image_convert(colorspace = "sRGB"); gc()
+    
+    width <- image_info(questioned_orange)$width
+    height <- image_info(questioned_orange)$height
+    
+    # Create a white image of the same size
+    img_white <- image_blank(width, height, color = "white"); gc()
+    
+    
+    questioned_orange <- image_composite(questioned_orange, img_white, operator = "CopyRed"); rm(img_white); gc()
+    # questioned_orange <- questioned_orange #%>%
+    #   image_transparent("white"); gc()
+    
+    image_write(questioned_orange, path = temp_file$Q_orange_aligned); gc()
+    image_write(questioned_orange  %>%
+                  image_scale(geometry = "25%"), path = temp_file$Q_orange_aligned_reduced); gc()
+    
+    d1 <- Sys.time()-s_time; d1.t <- round(d1, 2); d1.u <- units(d1)
+    progress$inc(0.1, detail = paste("Overlapping the colorized..(", d1.t, " ", d1.u, ").", sep = ""))
+    reference_blue <-  image_read(temp_file$R_blue)
+    # blue_orange <- image_composite(reference_blue, questioned_orange, operator = "add"); rm(reference_blue, questioned_orange); gc()
+    rq <- c(reference_blue, questioned_orange); rm(reference_blue, questioned_orange); gc()
+    blue_orange <- image_average(rq); rm(rq); gc()
+    image_write(blue_orange %>%
+                  image_scale(geometry = "25%"), path = temp_file$overlay_processed_reduced); gc()
+    image_write(blue_orange, path = temp_file$overlay_processed); rm(blue_orange); gc()
+    
+    # blue_orange <- load.image(temp_file$R_blue) %>% add.color() + trans_img; gc()
+    # save.image(blue_orange, file = temp_file$overlay_processed)
+    
+    
+    
+    
+    d1 <- Sys.time()-s_time; d1.t <- round(d1, 2); d1.u <- units(d1)
+    progress$inc(0.1, detail = paste("Aligning original images..(", d1.t, " ", d1.u, ").", sep = ""))
+    # questioned_org <- load.image(temp_file$Q_original)
+    # trans_org <- rotate.shift.over.white.bg.f(img = questioned_org,
+    #                                           theta = transformed_info$Angle,
+    #                                           cx.set = transformed_info$cx, cy.set = transformed_info$cy,
+    #                                           shift.x = transformed_info$X,
+    #                                           shift.y = transformed_info$Y)
+    # rm(questioned_org); gc()
+    # save.image(trans_org, file = temp_file$Q_original_aligned); rm(trans_org); gc()
+    questioned_org <- image_read(temp_file$Q_original)
+    trans_org <- rotate_shift_image(img = questioned_org,
+                                              theta = transformed_info$Angle,
+                                    dx = transformed_info$X,
+                                              dy = transformed_info$Y)
+    rm(questioned_org); gc()
+    image_write(trans_org, path = temp_file$Q_original_aligned); rm(trans_org); gc()
+    #   questioned_org <- image_read(temp_file$Q_original)
+    # image_write(questioned_org, path = temp_file$Q_original_aligned)
+    
+    ref_org <- image_read(temp_file$R_original); gc()
+    # ref_org <- ref_org %>%
+    #   image_modulate(brightness = 50); gc()
+    
+    questioned_org <- image_read(temp_file$Q_original_aligned); gc()
+    # questioned_org <- questioned_org %>%
+    #   image_modulate(brightness = 50); gc();
+    
+    
+    # overlayed_org <- image_composite(ref_org, questioned_org, operator = "plus"); rm(ref_org, questioned_org); gc()
+    rq <- c(ref_org, questioned_org); rm(ref_org, questioned_org); gc()
+    overlayed_org <- image_average(rq); rm(rq); gc()
+    image_write(overlayed_org, path = temp_file$overlay_original)
+    overlayed_org_reduced <- overlayed_org %>% 
+      image_resize(geometry = "25%"); rm (overlayed_org); gc()
+    image_write(overlayed_org_reduced, path = temp_file$overlay_original_reduced)
+    rm(overlayed_org_reduced); gc()
+    
+    
+    
+    # img_dims <- dim(ref_input)
+    # R_channel <- ref_input # Red stays the same
+    # G_channel <- ref_input # Green stays the same
+    # B_channel <- array(1, dim = img_dims)  # Always 1 for blue
+    # 
+    # # Combine channels into an RGB image efficiently
+    # ref_blue <- abind::abind(R_channel, G_channel, along = 4); rm(R_channel, G_channel); gc()
+    # ref_blue <- abind::abind(ref_blue, B_channel, along = 4) %>%
+    #   as.cimg(); rm(B_channel); gc()
+    # save.image(ref_blue, file = temp_file$R_blue)
+    # rm(ref_blue); gc()
+    # 
+    # img_dims <- dim(trans_img)
+    # G_channel <- trans_img  # Green stays the same
+    # B_channel <- trans_img # Always 1 for blue
+    # R_channel <- array(1, dim = img_dims) # Red stays the same
+    # # Combine channels into an RGB image efficiently
+    # questioned_orange <- abind::abind(R_channel, G_channel, along = 4); rm(R_channel, G_channel); gc()
+    # questioned_orange <- abind::abind(questioned_orange, B_channel, along = 4) %>%
+    #   as.cimg(); rm(B_channel); gc()
+    # 
+    # save.image(questioned_orange, file = temp_file$Q_orange_aligned)
+    # rm(questioned_orange); gc()
+    # 
+    # R_channel <- ref_input + 1; gc()
+    # G_channel <- ref_input + trans_img; rm(ref_input); gc()
+    # B_channel <- trans_img + 1; rm(trans_img); gc()
+    # blue_orange <- abind::abind(R_channel, G_channel, along = 4); rm(R_channel, G_channel); gc()
+    # blue_orange <- abind::abind(blue_orange, B_channel, along = 4) %>%
+    #   as.cimg(); rm(B_channel); gc()
+    # 
+    # save.image(blue_orange, file = temp_file$overlay_processed)
+    # rm(blue_orange); gc()
+    # 
+    #### For original overlay
+    # 
+    # questioned_org <- load.image(file = temp_file$Q_original)
+    # trans_org <- rotate.shift.over.white.bg.f(img = questioned_org,
+    #                                           theta = transformed_info$Angle, 
+    #                                           cx.set = transformed_info$cx, cy.set = transformed_info$cy,
+    #                                           shift.x = transformed_info$X,
+    #                                           shift.y = transformed_info$Y)
+    # rm(questioned_org); gc()
+    # save.image(trans_org, file = temp_file$Q_original_aligned)
+    # 
+    # 
+    # ref_org <- load.image(file = temp_file$R_original)
+    # xx.d <- dim(ref_org)[4]
+    # yy.d <- dim(trans_org)[4]
+    # if(xx.d==yy.d){
+    #   overlayed_org <- ref_org + trans_org; rm(ref_org, trans_org); gc()
+    # }else{
+    #   if(xx.d==1 & yy.d!=1){
+    #     overlayed_org <- add.color.f(ref_org); rm(ref_org); gc()
+    #     overlayed_org <- overlayed_org + trans_org; rm(trans_org); gc()
+    #   }else{
+    #     if(xx.d!=1 & yy.d==1){
+    #       overlayed_org <- add.color.f(trans_org); rm(trans_org); gc()
+    #       overlayed_org <- overlayed_org + ref_org; rm(ref_org); gc()
+    #     }}}
+    # save.image(overlayed_org, file = temp_file$overlay_original)
+    # rm(overlayed_org); gc()
+    
+    
+    ## cross-correlation for alignment location info
+    
+    d1 <- Sys.time()-s_time; d1.t <- round(d1, 2); d1.u <- units(d1)
+    progress$inc(0.1, detail = paste("computing diagnosis..(", d1.t, " ", d1.u, ").", sep = ""))
+    
+    # indices plusminus 2 around the index of max corr
+    # display.idx <- seq(max(1, each.max.idx-2), min(each.max.idx+2, length(set.angles)), 1)
+    
+    # Peaks of max_corr
+    curve_data <- res %>%
+      map(~.x[[2]]) %>%
+      unlist(use.names = FALSE)
+    peaks <- findpeaks(curve_data, sortstr = TRUE)
+    
+    # indices of three largest max corr in descending order
+    display.idx <- peaks[1:3, 2]
+    
+    selected.res <- display.idx %>%
+      map(~readRDS(tempfile.list[[.x]]))
+    
+    yy <- list()
+    for(i in 1:length(display.idx)){
+      xx <- selected.res[[i]]$corr.mat
+      xx[xx<=quantile(xx, 0.9)] <- NA
+      yy[[i]] <- as.cimg(xx) %>% 
+        mirror('x') 
+    }
+    yy.df <- yy %>%
+      map2(display.idx,
+           ~cbind(as.data.frame(.x), rotation_angle = as.factor(paste(set.angles[.y], 
+                                                                      "\u00B0", sep = "")))) %>% 
+      map(~.x %>%
+            mutate(x = x - round(median(x)),
+                   y = -(y - round(median(y))))) %>%
+      map_dfr(~.x)
+    
+    align_info_p <- list(max.cross.corr_angle = data.frame(angle = set.angles,
+                                                           max_corr = res %>%
+                                                             map(~.x$max.corr) %>%
+                                                             unlist()),
+                         cross.corr_map_angle = lattice::levelplot(value ~ x*y | rotation_angle, data=yy.df, 
+                                                                   xlab = 'shift_x', ylab = 'shift_y',
+                                                                   ylim = c(max(yy.df$y), min(yy.df$y)),
+                                                                   layout = c(length(display.idx), 1),
+                                                                   main = paste("Top 10% of cross-correlation by angles; scale = ", 
+                                                                                scale_down_factor, ".", sep = "")))
+    rm(res);gc()
+    
+    d1 <- Sys.time()-s_time; d1.t <- round(d1, 2); d1.u <- units(d1)
+    progress$inc(0.1, detail = paste("Almost done..(", d1.t, " ", d1.u, ").", sep = ""))
+    res <- list(transformed_info = transformed_info,
+                similarity_cor = aligned_cor,
+                align_info_p = align_info_p,
+                time_at_alignment = time_at_alignment,
+                original_f_Vals = temp_file)
+    cached_aligned(list(processed_res = res,
+                        temporary_dir = temp_directory))
+    
+    
+    
+  }) 
   
   
   # The transformation information
-  transform_information <- function(){
-    transformed <- aligned_res()$processed_res$transformed_info
-    return(paste("By the automated alignment, the questioned image was rotated by ",
-                 transformed$Angle, " degrees and shifted with horizontal shift = ", transformed$X, " and ",
-                 "vertical shift = ", -transformed$Y, ".", sep = "")) # -Y because the origin (0,0) is located at top-left corner, but in common sense, origin is at bottom-left corner.
-  }
+  
   output$transform_information <- renderText({
-    if(is.character(transform_information())){
-      print(transform_information())
-    }
+    req(cached_aligned())
+    transformed <- cached_aligned()$processed_res$transformed_info
+    print(paste("By the automated alignment, the questioned image was rotated by ",
+                transformed$Angle, " degrees and shifted with horizontal shift = ", transformed$X, " and ",
+                "vertical shift = ", -transformed$Y, ".", sep = "")) # -Y because the origin (0,0) is located at top-left corner, but in common sense, origin is at bottom-left corner.
+    
   })
   
   # The similarity score between the aligned images
   similarity_information <- function(){
-    similarity_score <- aligned_res()$processed_res$similarity_cor
+    similarity_score <- cached_aligned()$processed_res$similarity_cor
     return(paste("The Pearson correlation coefficient between two pre-processed images is ",
                  round(similarity_score, 4), ".", sep = ""))
   }
   output$similarity_information <- renderText({
-    if(is.character(similarity_information())){
-      print(similarity_information())
-    }
+    req(cached_aligned())
+    similarity_score <- cached_aligned()$processed_res$similarity_cor
+    print(paste("The Pearson correlation coefficient between two pre-processed images is ",
+                round(similarity_score, 4), ".", sep = ""))
   })
   
   #######################################################################################
   
-  output$plot4 <- renderPlot({
-    
-    par(mar = c(0,0,0,0))
-    if(is.numeric(aligned_res()$processed_res$similarity_cor)){
-      progress <- shiny::Progress$new()
-      # Make sure it closes when we exit this reactive, even if there's an error
-      on.exit(progress$close())
-      
-      progress$set(message = "Plotting in progress..", value = 0)
-      
-      plot(aligned_res()$processed_res$colored_res$ref %>%
-             determine.display.scale.f(), axes = FALSE)
-      
-      progress$inc(0.25)
-      
-    }
-    
-  })
-  output$plot5 <- renderPlot({
-    par(mar = c(0,0,0,0))
-    if(is.numeric(aligned_res()$processed_res$similarity_cor)){
-      progress <- shiny::Progress$new()
-      # Make sure it closes when we exit this reactive, even if there's an error
-      on.exit(progress$close())
-      
-      progress$set(message = "Plotting in progress..", value = .25)
-      plot(aligned_res()$processed_res$colored_res$questioned %>%
-             determine.display.scale.f(), axes = FALSE)
-      
-      progress$inc(0.25)
-    }
-  })
-  output$plot6 <- renderPlot({
-    par(mar = c(0,0,0,0))
-    if(is.numeric(aligned_res()$processed_res$similarity_cor)){
-      progress <- shiny::Progress$new()
-      # Make sure it closes when we exit this reactive, even if there's an error
-      on.exit(progress$close())
-      
-      progress$set(message = "Plotting in progress..", value = .5)
-      plot(aligned_res()$processed_res$colored_res$overlayed %>%
-             determine.display.scale.f(), axes = FALSE)
-      
-      progress$inc(0.25)
-      
-    }
-  })
+  # output$plot4 <- renderPlot({
+  #   
+  #   par(mar = c(0,0,0,0))
+  #   if(is.numeric(cached_aligned()$processed_res$similarity_cor)){
+  #     progress <- shiny::Progress$new()
+  #     # Make sure it closes when we exit this reactive, even if there's an error
+  #     on.exit(progress$close())
+  #     
+  #     progress$set(message = "Plotting in progress..", value = 0)
+  #     
+  #     plot(load.image(cached_aligned()$processed_res$original_f_Vals$R_blue) %>% #1234
+  #            determine.display.scale.f(), axes = FALSE); gc()
+  #     progress$inc(0.25)
+  #     
+  #   }
+  #   
+  # })
+  output$plot4 <- renderImage({
+    req(cached_aligned()$processed_res$original_f_Vals$R_blue_reduced)
+    progress <- shiny::Progress$new()
+    on.exit(progress$close())
+    progress$set(message = "Plotting in progress..", value = 0)
+    progress$inc(0.25)
+    list(
+      src = cached_aligned()$processed_res$original_f_Vals$R_blue_reduced,  # Path to the saved image
+      width = "90%",  # Dynamically fit the width
+      height = "auto",  # Maintain aspect ratio
+      alt = "Q_processed_reduced"
+    )
+  }, deleteFile = FALSE)
+  
+  output$plot5 <- renderImage({
+    req(cached_aligned()$processed_res$original_f_Vals$Q_orange_aligned_reduced)
+    progress <- shiny::Progress$new()
+    on.exit(progress$close())
+    progress$set(message = "Plotting in progress..", value = .25)
+    progress$inc(0.25)
+    list(
+      src = cached_aligned()$processed_res$original_f_Vals$Q_orange_aligned_reduced,  # Path to the saved image
+      width = "90%",  # Dynamically fit the width
+      height = "auto",  # Maintain aspect ratio
+      alt = "Q_processed_reduced"
+    )
+  }, deleteFile = FALSE)
+  
+  output$plot6 <- renderImage({
+    req(cached_aligned()$processed_res$original_f_Vals$overlay_processed_reduced)
+    progress <- shiny::Progress$new()
+    on.exit(progress$close())
+    progress$set(message = "Plotting in progress..", value = .5)
+    progress$inc(0.25)
+    list(
+      src = cached_aligned()$processed_res$original_f_Vals$overlay_processed_reduced,  # Path to the saved image
+      width = "90%",  # Dynamically fit the width
+      height = "auto",  # Maintain aspect ratio
+      alt = "overlay_processed_reduced"
+    )
+  }, deleteFile = FALSE)
   #######################################################################################
   
   
   # ########### To plot the alignment results from the original FILE1 and FILE2 #############
   
-  output$plot7 <- renderPlot({
-    if(!is.null(input$file1)){
-      plot(loaded1())
-    }
-  })
+  output$plot7 <- renderImage({
+    req(cached_view1())
+    list(
+      src = cached_view1(),  # Path to the saved image
+      width = "90%",  # Dynamically fit the width
+      height = "auto",  # Maintain aspect ratio
+      alt = "original_reference_image"
+    )
+  }, deleteFile = FALSE)
   
-  # output$plot7 <- plotlyOutput({
-  #   tmp <- ggplot_with_points(image_ggplot_modified(loaded1()), 
-  #                      as.data.frame(x_value = 0, y_value = 0),
-  #                      point_col = "green")
-  #   plotly::toWebGL(tmp)
-  #   
-  # })
-  # 
-  output$plot8 <- renderPlot({
-    if(!is.null(input$file2)){
-      plot(loaded2())
-    }
-  })
   
-  output$plot9 <- renderPlot({
-    par(mar = c(0,0,0,0))
-    if(is.numeric(aligned_res()$processed_res$similarity_cor)){
-      progress <- shiny::Progress$new()
-      # Make sure it closes when we exit this reactive, even if there's an error
-      on.exit(progress$close())
-      
-      progress$set(message = "Plotting almost done..", value = .75)
-      # plot(aligned_res()$processed_res$overlayed_org %>%
-      #        determine.display.scale.f(), axes = FALSE)
-      
-      plot(aligned_res()$processed_res$overlayed_org %>%
-             determine.display.scale.f(), axes = FALSE)
-      progress$inc(0.25)
-    }
-    
-    
-  })
+  output$plot8 <- renderImage({
+    req(cached_view2())
+    list(
+      src = cached_view2(),  # Path to the saved image
+      width = "90%",  # Dynamically fit the width
+      height = "auto",  # Maintain aspect ratio
+      alt = "original_questioned_image"
+    )
+  }, deleteFile = FALSE)
   
+  output$plot9 <- renderImage({
+    req(cached_aligned()$processed_res$original_f_Vals$overlay_original_reduced)
+    progress <- shiny::Progress$new()
+    on.exit(progress$close())
+    progress$set(message = "Plotting almost done..", value = .75)
+    progress$inc(0.25)
+    list(
+      src = cached_aligned()$processed_res$original_f_Vals$overlay_original_reduced,  # Path to the saved image
+      width = "90%",  # Dynamically fit the width
+      height = "auto",  # Maintain aspect ratio
+      alt = "original_overlay_reduced"
+    )
+  }, deleteFile = FALSE)
   
   #########################################################################################
   
   
   
   ########### To download the edited FILE1 and FILE2, and alignment results #############
-  rm.extension <- function(x){
-    x.split <- strsplit(x, "\\.")[[1]]
-    x.split <- x.split[-length(x.split)]
-    return(paste(x.split, collapse = "."))
-  }
-  
-  
   output$download_btn <- downloadHandler(
     filename = function(){
       paste("ShoeprintAnalyzr", format(Sys.time(),'_%Y%m%d_%H%M%S'), ".zip", sep = "")
@@ -2726,7 +3066,7 @@ server <- function(input, output, session) {
     content = function(file){
       
       
-      time_now <- format(Sys.time(),'tmp_%Y%m%d_%H%M%S')
+      time_now <- cached_aligned()$processed_res$time_at_alignment 
       if(get_os() != "win64"){
         temp_directory_time <- paste(temp_directory, "/", time_now, sep = "")
         dir.create(temp_directory_time)
@@ -2745,60 +3085,58 @@ server <- function(input, output, session) {
       # Make sure it closes when we exit this reactive, even if there's an error
       on.exit(progress$close())
       
-      progress$set(message = "Exporting shoeprints..", value = 0.1)
+      progress$set(message = "Exporting images..", value = 0.1)
       
       
-      img.list <- list(aligned_res()$processed_res$colored_res$ref,
-                       aligned_res()$processed_res$colored_res$questioned,
-                       aligned_res()$processed_res$colored_res$overlayed,
-                       aligned_res()$processed_res$ref_images$org_padded,
-                       aligned_res()$processed_res$questioned_images$org_padded,
-                       aligned_res()$processed_res$questioned_images$aligned_org,
-                       aligned_res()$processed_res$overlayed_org)
+      temp_file.list <- cached_aligned()$processed_res$original_f_Vals
       
-      filename.list <- list(paste("blue_", rm.extension(input$file1$name), sep = ""),
-                            paste("orange_", rm.extension(input$file2$name), sep = ""),
-                            "overlay_blue_orange",
-                            paste("original_", rm.extension(input$file1$name), sep = ""),
-                            paste("original_", rm.extension(input$file2$name), sep = ""),
-                            paste("original_aligned_", rm.extension(input$file2$name), sep = ""),
-                            "overlay_original")
+      names.img <- names(temp_file.list)
       
-      file.folder.list <- c(rep(processed_f, 3),
-                            rep(original_f, 4))
-      for(i in 1:length(filename.list)){
-        imager::save.image(img.list[[i]],
-                           file.path(file.folder.list[[i]], paste(filename.list[[i]], ".jpeg", sep = "")),
-                           quality = 0.7)
-        progress$inc(0.5/length(filename.list), 
-                     detail = paste("(", round(100*i/length(filename.list)), "%)..", sep = ""))
-      }
-      
-      progress$inc(0.1, message = "Exporting binary masks..", detail = NULL)
-      if(!is.null(loaded1_processed()$mask)){
-        image_write(loaded1_processed()$mask,
-                    file.path(mask_f, paste("m_", rm.extension(input$file1$name), ".jpeg", sep = "")))
-      }
-      if(!is.null(loaded2_processed()$mask)){
-        image_write(loaded2_processed()$mask,
-                    file.path(mask_f, paste("m_", rm.extension(input$file2$name), ".jpeg", sep = "")))
-      }
+      if(!is.null(temp_file.list)){
+        for(i in 1:length(temp_file.list)){
+          if(names.img[i] %in% c("R_original", "Q_original",
+                                 "Q_original_aligned",
+                                 "overlay_original")){
+            temp_file <- temp_file.list[[i]]
+            final_file <- file.path(original_f, basename(temp_file))
+            file.rename(temp_file, final_file)
+          }else{
+            if(names.img[i] %in% c("R_processed", "Q_processed", "Q_processed_aligned",
+                                   "R_blue", "Q_orange_aligned",
+                                   "overlay_processed")){
+              temp_file <- temp_file.list[[i]]
+              final_file <- file.path(processed_f, basename(temp_file))
+              file.rename(temp_file, final_file)
+            }else{
+              if(names.img[i] %in% c("R_mask", "Q_mask")){
+                temp_file <- temp_file.list[[i]]
+                final_file <- file.path(mask_f, basename(temp_file))
+                file.rename(temp_file, final_file)
+              }
+            }}
+        }}
       
       progress$inc(0.1, message = "Exporting diagnostic plots..", detail = NULL)
       
       pdf(file.path(temp_directory_time, "Diagnose_reduced_scale.pdf"))
-      plot(aligned_res()$processed_res$align_info_p$max.cross.corr_angle,
+      plot(cached_aligned()$processed_res$align_info_p$max.cross.corr_angle,
            xlab = "rotation angle",
            ylab = "maximum cross-correlation in a reduced scale")
-      axis(1, at = seq(min(aligned_res()$processed_res$align_info_p$max.cross.corr_angle$angle),
-                       max(aligned_res()$processed_res$align_info_p$max.cross.corr_angle$angle),
+      axis(1, at = seq(min(cached_aligned()$processed_res$align_info_p$max.cross.corr_angle$angle),
+                       max(cached_aligned()$processed_res$align_info_p$max.cross.corr_angle$angle),
                        by = 5), las=1)
       
-      print(aligned_res()$processed_res$align_info_p$cross.corr_map_angle)
+      curve_data <- cached_aligned()$processed_res$align_info_p$max.cross.corr_angle
+      peaks <- findpeaks(curve_data[,2], sortstr = TRUE)
+      
+      plot(curve_data, type = "l", main = "Find Peaks Example")
+      points(curve_data[,1][peaks[1:3, 2]], peaks[1:3, 1], col = "red", pch = 19)  # Highlight peaks
+      
+      print(cached_aligned()$processed_res$align_info_p$cross.corr_map_angle)
       
       dev.off()
       
-      transformed <- aligned_res()$processed_res
+      transformed <- cached_aligned()$processed_res
       
       
       progress$inc(0.1, message = "Exporting alignment information..", detail = NULL)
@@ -2831,6 +3169,8 @@ server <- function(input, output, session) {
         tuq <- max(input$Threshold2)
       }
       
+      progress$inc(0.1, message = "Exporting alignment information2..", detail = NULL)
+      
       out_report <- data.frame(date = Sys.Date(),
                                task_id = generate_unique_id(paste(input$file1$name,
                                                                   input$file2$name,
@@ -2856,57 +3196,102 @@ server <- function(input, output, session) {
                downscale_factor = as.character(MASS::fractions(downscale_factor)))
       
       
-      xlsx::write.xlsx(out_report,
-                       file = file.path(temp_directory_time, "alignment_metadata.xlsx"),
-                       sheetName = "pair_info",
-                       col.names = TRUE,
-                       row.names = FALSE)
+      progress$inc(0.1, message = "Exporting alignment information3..", detail = NULL)
       
+      # Define the output file path
+      file_path <- file.path(temp_directory_time, "alignment_metadata.xlsx")
       
-      if(!is.null(loaded1_processed()$mask_xy)){
-        xlsx::write.xlsx(loaded1_processed()$mask_xy %>%
-                           as.data.frame() %>%
-                           rename(x = V1, y = V2),
-                         file = file.path(temp_directory_time, "alignment_metadata.xlsx"),
-                         sheetName = "crop_info_R",
-                         col.names = TRUE,
-                         row.names = FALSE,
-                         append = TRUE)
-        
-        write.table(loaded1_processed()$mask_xy %>%
-                      as.data.frame() %>%
-                      rename(x = V1, y = V2) %>%
-                      mutate(grayscale= gr,
-                             invert = ir,
-                             threshold_lower = tlr,
-                             threshold_upper = tur),
-                    file = file.path(temp_directory_time, paste("p_info_", rm.extension(input$file1$name), ".txt", sep = "")),
-                    row.names = FALSE,
-                    col.names = TRUE)
+      progress$inc(0.1, message = "Exporting alignment information4..", detail = NULL)
+      
+      # Ensure the workbook is valid
+      if (file.exists(file_path)) {
+        wb <- tryCatch({
+          loadWorkbook(file_path)  # Load the workbook
+        }, error = function(e) {
+          message("Error loading workbook: ", e)
+          createWorkbook()  # Create a new workbook if loading fails
+        })
+      } else {
+        wb <- createWorkbook()  # Create a new workbook
       }
       
-      
-      if(!is.null(loaded2_processed()$mask_xy)){
-        xlsx::write.xlsx(loaded2_processed()$mask_xy %>%
-                           as.data.frame() %>%
-                           rename(x = V1, y = V2),
-                         file = file.path(temp_directory_time, "alignment_metadata.xlsx"),
-                         sheetName = "crop_info_Q",
-                         col.names = TRUE,
-                         row.names = FALSE,
-                         append = TRUE)
-        
-        write.table(loaded2_processed()$mask_xy %>%
-                      as.data.frame() %>%
-                      rename(x = V1, y = V2) %>%
-                      mutate(grayscale= gq,
-                             invert = iq,
-                             threshold_lower = tlq,
-                             threshold_upper = tuq),
-                    file = file.path(temp_directory_time, paste("p_info_", rm.extension(input$file2$name), ".txt", sep = "")),
-                    row.names = FALSE,
-                    col.names = TRUE)
+      # Safely retrieve sheet names
+      sheet_names <- wb$sheet_names  # Access sheet names directly
+      if (is.null(sheet_names)) {
+        sheet_names <- character(0)  # Handle empty workbooks
       }
+      
+      # Add "pair_info" sheet if necessary
+      if (!"pair_info" %in% sheet_names) {
+        addWorksheet(wb, "pair_info")
+      }
+      
+      # Write data to "pair_info" sheet
+      writeData(wb, "pair_info", out_report, colNames = TRUE, rowNames = FALSE)
+      
+      
+      progress$inc(0.1, message = "Exporting alignment information5..", detail = NULL)
+      
+      # Process and write data for loaded1_processed()
+      if (!is.null(loaded1_processed()$mask_xy)) {
+        # Add "crop_info_R" sheet if necessary
+        if (!"crop_info_R" %in% sheet_names) {
+          addWorksheet(wb, "crop_info_R")
+        }
+        
+        # Write mask_xy to "crop_info_R" sheet
+        writeData(wb, "crop_info_R",
+                  loaded1_processed()$mask_xy %>%
+                    as.data.frame() %>%
+                    rename(x = V1, y = V2),
+                  colNames = TRUE, rowNames = FALSE)
+        
+        # Write mask_xy to a text file
+        write.table(
+          loaded1_processed()$mask_xy %>%
+            as.data.frame() %>%
+            rename(x = V1, y = V2) %>%
+            mutate(grayscale = gr,
+                   invert = ir,
+                   threshold_lower = tlr,
+                   threshold_upper = tur),
+          file = file.path(temp_directory_time, paste("p_info_", rm.extension(input$file1$name), ".txt", sep = "")),
+          row.names = FALSE,
+          col.names = TRUE
+        )
+      }
+      
+      # Process and write data for loaded2_processed()
+      if (!is.null(loaded2_processed()$mask_xy)) {
+        # Add "crop_info_Q" sheet if necessary
+        if (!"crop_info_Q" %in% sheet_names) {
+          addWorksheet(wb, "crop_info_Q")
+        }
+        
+        # Write mask_xy to "crop_info_Q" sheet
+        writeData(wb, "crop_info_Q",
+                  loaded2_processed()$mask_xy %>%
+                    as.data.frame() %>%
+                    rename(x = V1, y = V2),
+                  colNames = TRUE, rowNames = FALSE)
+        
+        # Write mask_xy to a text file
+        write.table(
+          loaded2_processed()$mask_xy %>%
+            as.data.frame() %>%
+            rename(x = V1, y = V2) %>%
+            mutate(grayscale = gq,
+                   invert = iq,
+                   threshold_lower = tlq,
+                   threshold_upper = tuq),
+          file = file.path(temp_directory_time, paste("p_info_", rm.extension(input$file2$name), ".txt", sep = "")),
+          row.names = FALSE,
+          col.names = TRUE
+        )
+      }
+      
+      # Save the workbook
+      saveWorkbook(wb, file_path, overwrite = TRUE)
       
       
       progress$inc(0.1, message = "Zipping everything..")
@@ -2919,7 +3304,8 @@ server <- function(input, output, session) {
       )
       
       
-      unlink(temp_directory_time, recursive = TRUE) # Remove the files saved temporarily.
+      
+      unlink(temp_directory, recursive = TRUE) # Remove the files saved temporarily.
       
       
       progress$inc(0.05, message = "Complete!", detail = NULL)
